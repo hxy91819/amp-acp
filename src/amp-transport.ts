@@ -42,6 +42,7 @@ export interface AmpExecutionRequest {
   prompt: string;
   options: AmpExecutionOptions;
   signal: AbortSignal;
+  steer: boolean;
 }
 
 export interface AmpTransport {
@@ -72,7 +73,7 @@ export function buildAmpSdkOptions(options: AmpExecutionOptions): AmpOptions {
   };
 }
 
-export function buildAmpCliArgs(options: AmpExecutionOptions): string[] {
+export function buildAmpCliArgs(options: AmpExecutionOptions, steer = false): string[] {
   const args: string[] = [];
 
   if (typeof options.continue === 'string') {
@@ -81,12 +82,26 @@ export function buildAmpCliArgs(options: AmpExecutionOptions): string[] {
     args.push('threads', 'continue', '--last');
   }
 
-  args.push('--execute', '--stream-json', '--no-archive-after-execute');
+  args.push('--execute', '--stream-json');
+  if (steer) args.push('--stream-json-input');
+  args.push('--no-archive-after-execute');
   if (options.mode) args.push('--mode', options.mode);
   if (options.dangerouslyAllowAll) args.push('--dangerously-allow-all');
   if (options.mcpConfig) args.push('--mcp-config', JSON.stringify(options.mcpConfig));
 
   return args;
+}
+
+function formatPromptInput(prompt: string, steer: boolean): string {
+  if (!steer) return prompt;
+  return `${JSON.stringify({
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [{ type: 'text', text: prompt }],
+    },
+    steer: true,
+  })}\n`;
 }
 
 export function createCliTransport(
@@ -95,10 +110,10 @@ export function createCliTransport(
 ): AmpTransport {
   return {
     name: 'cli',
-    async *execute({ prompt, options, signal }) {
+    async *execute({ prompt, options, signal, steer }) {
       signal.throwIfAborted();
 
-      const child = spawn(command, [...commandArgs, ...buildAmpCliArgs(options)], {
+      const child = spawn(command, [...commandArgs, ...buildAmpCliArgs(options, steer)], {
         cwd: options.cwd,
         env: { ...process.env, ...options.env },
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -114,7 +129,7 @@ export function createCliTransport(
       signal.addEventListener('abort', abort, { once: true });
 
       child.stdin.on('error', () => {});
-      child.stdin.end(prompt);
+      child.stdin.end(formatPromptInput(prompt, steer));
 
       try {
         const lines = createInterface({ input: child.stdout, crlfDelay: Number.POSITIVE_INFINITY });

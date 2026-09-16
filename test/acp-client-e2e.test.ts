@@ -19,12 +19,15 @@ let fakeAmpPath: string;
 
 beforeAll(async () => {
   fixtureDir = await mkdtemp(path.join(os.tmpdir(), 'amp-acp-e2e-'));
-  fakeAmpPath = path.join(fixtureDir, 'amp');
+  fakeAmpPath = path.join(fixtureDir, 'amp.mjs');
   await writeFile(fakeAmpPath, `#!/usr/bin/env node
 let prompt = '';
 for await (const chunk of process.stdin) prompt += chunk;
 
 const continued = process.argv.includes('continue');
+const streamingInput = process.argv.includes('--stream-json-input');
+const input = streamingInput ? JSON.parse(prompt.trim()) : null;
+if (input) prompt = input.message.content.map((part) => part.text).join('');
 console.log(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'T-acp-e2e' }));
 if (prompt === 'cancel me') await new Promise((resolve) => setTimeout(resolve, 30000));
 console.log(JSON.stringify({
@@ -42,7 +45,10 @@ console.log(JSON.stringify({
 }));
 console.log(JSON.stringify({
   type: 'assistant',
-  message: { content: [{ type: 'text', text: 'reply:' + prompt + ';continued:' + continued }] },
+  message: { content: [{
+    type: 'text',
+    text: 'reply:' + prompt + ';continued:' + continued + (input ? ';steer:' + input.steer : ''),
+  }] },
 }));
 console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false }));
 `);
@@ -114,11 +120,18 @@ describe('ACP client to compiled amp-acp binary', () => {
           await new Promise((resolve) => setTimeout(resolve, 100));
           await agent.notify(methods.agent.session.cancel, { sessionId: session.sessionId });
 
+          const cancelled = await cancelledPrompt;
+          const steered = await agent.request(methods.agent.session.prompt, {
+            sessionId: session.sessionId,
+            prompt: [{ type: 'text', text: 'change direction' }],
+          });
+
           return {
             initialized,
             first,
             second,
-            cancelled: await cancelledPrompt,
+            cancelled,
+            steered,
           };
         });
 
@@ -126,6 +139,7 @@ describe('ACP client to compiled amp-acp binary', () => {
       expect(result.first.stopReason).toBe('end_turn');
       expect(result.second.stopReason).toBe('end_turn');
       expect(result.cancelled.stopReason).toBe('cancelled');
+      expect(result.steered.stopReason).toBe('end_turn');
 
       const sessionUpdates = updates.map((notification) => notification.update);
       expect(sessionUpdates).toContainEqual(expect.objectContaining({ sessionUpdate: 'agent_thought_chunk' }));
@@ -145,6 +159,10 @@ describe('ACP client to compiled amp-acp binary', () => {
       expect(sessionUpdates).toContainEqual(expect.objectContaining({
         sessionUpdate: 'agent_message_chunk',
         content: { type: 'text', text: 'reply:second prompt;continued:true' },
+      }));
+      expect(sessionUpdates).toContainEqual(expect.objectContaining({
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'reply:change direction;continued:true;steer:true' },
       }));
     } catch (error) {
       const logs = Buffer.concat(stderr).toString().trim();
