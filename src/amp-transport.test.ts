@@ -107,6 +107,20 @@ describe('Amp transport', () => {
     ]);
   });
 
+  it('uses streaming input for a steering continuation', () => {
+    expect(buildAmpCliArgs({ ...baseOptions, continue: 'T-test-thread' }, true)).toEqual([
+      'threads',
+      'continue',
+      'T-test-thread',
+      '--execute',
+      '--stream-json',
+      '--stream-json-input',
+      '--no-archive-after-execute',
+      '--mode',
+      'medium',
+    ]);
+  });
+
   it('continues the latest CLI thread when requested', () => {
     expect(buildAmpCliArgs({ ...baseOptions, continue: true }).slice(0, 4)).toEqual([
       'threads',
@@ -124,12 +138,30 @@ describe('Amp transport', () => {
       prompt: 'hello from ACP',
       options: { ...baseOptions, cwd: fixtureDir },
       signal: controller.signal,
+      steer: false,
     }));
 
     expect(messages).toEqual([
       { type: 'system', subtype: 'init', session_id: 'T-cli-test' },
       { type: 'result', subtype: 'success', is_error: false, result: 'hello from ACP' },
     ]);
+  });
+
+  it('marks steering input for Amp instead of submitting a queued continuation', async () => {
+    const transport = createCliTransport(process.execPath, [fixturePath]);
+    const messages = await collect(transport.execute({
+      prompt: 'change direction',
+      options: { ...baseOptions, cwd: fixtureDir, continue: 'T-cli-test' },
+      signal: new AbortController().signal,
+      steer: true,
+    }));
+
+    expect(messages.at(-1)).toEqual({
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      result: '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"change direction"}]},"steer":true}\n',
+    });
   });
 
   it('includes CLI stderr when the process fails', async () => {
@@ -139,6 +171,7 @@ describe('Amp transport', () => {
       prompt: 'fail',
       options: { ...baseOptions, cwd: fixtureDir },
       signal: new AbortController().signal,
+      steer: false,
     }))).rejects.toThrow('Amp CLI process exited with code 2: fixture failure');
   });
 
@@ -149,6 +182,7 @@ describe('Amp transport', () => {
       prompt: 'wait',
       options: { ...baseOptions, cwd: fixtureDir },
       signal: controller.signal,
+      steer: false,
     })[Symbol.asyncIterator]();
 
     expect((await iterator.next()).value?.type).toBe('system');

@@ -1,5 +1,6 @@
 import { describe, it, beforeEach, afterEach, expect, mock } from 'bun:test';
 import type { AgentSideConnection } from '@agentclientprotocol/sdk';
+import type { AmpExecutionRequest, AmpTransport } from './amp-transport.js';
 
 const capturedCalls: { options: Record<string, unknown> }[] = [];
 
@@ -122,5 +123,54 @@ describe('AmpAcpAgent prompt() continue option', () => {
     expect(capturedCalls).toHaveLength(2);
     expect(capturedCalls[0]!.options.continue).toBe(true);
     expect(capturedCalls[1]!.options.continue).toBe('T-test-thread-id');
+  });
+
+  it('marks the prompt after cancellation as a steer into the active Amp thread', async () => {
+    const requests: AmpExecutionRequest[] = [];
+    const transport: AmpTransport = {
+      name: 'cli',
+      async *execute(request) {
+        requests.push(request);
+        yield { type: 'system', subtype: 'init', session_id: 'T-active-thread' };
+        if (requests.length === 1) {
+          await new Promise<void>((resolve) => {
+            if (request.signal.aborted) {
+              resolve();
+              return;
+            }
+            request.signal.addEventListener('abort', () => resolve(), { once: true });
+          });
+          throw new Error('Amp CLI process was aborted');
+        }
+        yield { type: 'result', subtype: 'success', is_error: false };
+      },
+    };
+    agent = new AmpAcpAgent(mockClient, transport);
+    const session = await agent.newSession({ cwd: '/tmp', mcpServers: [] });
+    const firstPrompt = agent.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: 'text', text: 'first' }],
+    });
+
+    while (agent.sessions.get(session.sessionId)?.threadId !== 'T-active-thread') {
+      await Promise.resolve();
+    }
+    await agent.cancel({ sessionId: session.sessionId });
+    expect((await firstPrompt).stopReason).toBe('cancelled');
+
+    await agent.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: 'text', text: 'change direction' }],
+    });
+    await agent.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: 'text', text: 'later follow-up' }],
+    });
+
+    expect(requests.map(({ options, steer }) => ({ continue: options.continue, steer }))).toEqual([
+      { continue: undefined, steer: false },
+      { continue: 'T-active-thread', steer: true },
+      { continue: 'T-active-thread', steer: false },
+    ]);
   });
 });

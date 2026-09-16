@@ -91,6 +91,7 @@ Run `amp login` before starting amp-acp. The adapter and CLI share the same Amp 
 - **Session configuration** — Configure permissions (*Default* or *Bypass*) and the current Amp mode (`low`, `medium`, `high`, or `ultra`) via ACP config options
 - **`/init` command** — Type `/init` to generate an `AGENTS.md` file for your project
 - **Conversation continuity** — Thread context is preserved across multiple prompts within a session
+- **Native steering** — A prompt submitted after ACP cancellation is marked as an Amp steer instead of waiting in the thread queue
 
 ### Continuing the latest thread on session start
 
@@ -99,6 +100,8 @@ When the environment variable `AMP_ACP_CONTINUE_LATEST=1` is set, the first prom
 ### Amp execution transport
 
 By default, amp-acp executes the installed Amp CLI directly through its streaming JSON interface. Set `AMP_ACP_TRANSPORT=sdk` to use `@ampcode/sdk` as a compatibility fallback; both transports support the current `low`, `medium`, `high`, and `ultra` Amp modes.
+
+Native steering uses the CLI transport because Amp exposes the steer marker through `--stream-json-input`. The SDK compatibility transport does not currently expose that marker.
 
 ## MCP Configuration Passthrough
 
