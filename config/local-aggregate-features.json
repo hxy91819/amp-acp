@@ -6,5 +6,20 @@
     "lastIntegratedUpstreamCommit": "68f0a16ebd437e51c9bf4d7a2b47c981010dc9a1",
     "stableTagPattern": "^v\\d+\\.\\d+\\.\\d+$"
   },
-  "features": []
+  "features": [
+    {
+      "branch": "fix/amp-steer",
+      "lastPackaged": {
+        "sourceCommit": "05f1268c81d37241fcc2ebf5ad0e973d46f72612",
+        "aggregateCommit": "98e1528cd344527eca2d38d24b2d68bd6f5900a0"
+      },
+      "upstreamIssues": [
+        {
+          "repository": "tao12345666333/amp-acp",
+          "number": 61,
+          "feedbackUrl": "https://github.com/tao12345666333/amp-acp/issues/61"
+        }
+      ]
+    }
+  ]
 }
