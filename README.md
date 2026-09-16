@@ -93,6 +93,7 @@ Run `amp login` before starting amp-acp. The adapter and CLI share the same Amp 
 - **Conversation continuity** — Thread context is preserved across multiple prompts within a session
 - **Session resume** — `session/load` reattaches to the underlying Amp thread after amp-acp restarts, so ACP clients can reopen earlier sessions
 - **Native thread lifecycle** — ACP clients can persist Amp's durable thread ID and archive or unarchive that exact thread
+- **Native steering** — A prompt submitted after ACP cancellation is marked as an Amp steer instead of waiting in the thread queue
 
 ### Native Amp thread lifecycle extension
 
@@ -132,6 +133,8 @@ During `session/load`, prior messages are replayed to the client as `session/upd
 ### Amp execution transport
 
 By default, amp-acp executes the installed Amp CLI directly through its streaming JSON interface. Set `AMP_ACP_TRANSPORT=sdk` to use `@ampcode/sdk` as a compatibility fallback; both transports support the current `low`, `medium`, `high`, and `ultra` Amp modes.
+
+Native steering uses the CLI transport because Amp exposes the steer marker through `--stream-json-input`. The SDK compatibility transport does not currently expose that marker.
 
 ## MCP Configuration Passthrough
 
