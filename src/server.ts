@@ -157,6 +157,7 @@ interface SessionState {
   threadId: string | null;
   controller: AbortController | null;
   cancelled: boolean;
+  steerNextPrompt: boolean;
   active: boolean;
   mode: PermissionMode;
   model: AmpModelId;
@@ -266,6 +267,7 @@ export class AmpAcpAgent implements Agent {
       threadId: null,
       controller: null,
       cancelled: false,
+      steerNextPrompt: false,
       active: false,
       mode: 'default',
       model: 'medium',
@@ -418,6 +420,8 @@ export class AmpAcpAgent implements Agent {
     if (!s) throw new Error('Session not found');
     s.cancelled = false;
     s.active = true;
+    const steer = s.steerNextPrompt;
+    s.steerNextPrompt = false;
 
     let textInput = '';
     for (const chunk of params.prompt) {
@@ -483,7 +487,12 @@ If there are Cursor rules (in .cursor/rules/ or .cursorrules), Claude rules (CLA
 
     try {
       const transport = s.executor === 'orb' ? this.orbTransport : this.transport;
-      for await (const message of transport.execute({ prompt: textInput, options, signal: controller.signal })) {
+      for await (const message of transport.execute({
+        prompt: textInput,
+        options,
+        signal: controller.signal,
+        steer: s.executor === 'local' && steer,
+      })) {
         if (message.session_id) {
           if (!isAmpThreadId(message.session_id)) {
             throw new Error(`Amp returned an invalid thread ID: ${message.session_id}`);
@@ -543,6 +552,7 @@ If there are Cursor rules (in .cursor/rules/ or .cursorrules), Claude rules (CLA
     if (!s) return;
     if (s.active && s.controller) {
       s.cancelled = true;
+      s.steerNextPrompt = s.threadId !== null;
       s.controller.abort();
     }
   }
