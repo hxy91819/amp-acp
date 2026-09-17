@@ -102,6 +102,55 @@ describe('AmpAcpAgent prompt() continue option', () => {
     expect(capturedCalls[0]!.options.mode).toBe('low');
   });
 
+  it('rejects config changes after the Amp process has started', async () => {
+    const transport: AmpTransport = {
+      name: 'cli',
+      async *execute() {
+        yield { type: 'system', subtype: 'init', session_id: 'T-started-thread' };
+        yield { type: 'result', subtype: 'success', is_error: false };
+      },
+    };
+    agent = new AmpAcpAgent(mockClient, transport);
+    const session = await agent.newSession({ cwd: '/tmp', mcpServers: [] });
+    await agent.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: 'text', text: 'hello' }],
+    });
+
+    await expect(agent.setSessionConfigOption({
+      sessionId: session.sessionId,
+      configId: 'amp-mode',
+      value: 'high',
+    })).rejects.toThrow('Session configuration cannot change after the Amp process has started');
+  });
+
+  it('rejects config changes after cancellation before Amp reports its thread ID', async () => {
+    const transport: AmpTransport = {
+      name: 'cli',
+      async *execute(request) {
+        await new Promise<void>((resolve) => {
+          request.signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+        throw new Error('Amp CLI prompt was cancelled');
+      },
+    };
+    agent = new AmpAcpAgent(mockClient, transport);
+    const session = await agent.newSession({ cwd: '/tmp', mcpServers: [] });
+    const prompt = agent.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: 'text', text: 'hello' }],
+    });
+    while (!agent.sessions.get(session.sessionId)?.active) await Promise.resolve();
+    await agent.cancel({ sessionId: session.sessionId });
+    expect((await prompt).stopReason).toBe('cancelled');
+
+    await expect(agent.setSessionConfigOption({
+      sessionId: session.sessionId,
+      configId: 'permission',
+      value: 'bypass',
+    })).rejects.toThrow('Session configuration cannot change after the Amp process has started');
+  });
+
   it('passes selected permission config to the SDK', async () => {
     const session = await agent.newSession({ cwd: '/tmp', mcpServers: [] });
     await agent.setSessionConfigOption({ sessionId: session.sessionId, configId: 'permission', value: 'bypass' });
