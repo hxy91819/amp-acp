@@ -159,6 +159,7 @@ interface SessionState {
   cancelled: boolean;
   steerNextPrompt: boolean;
   active: boolean;
+  processStarted: boolean;
   mode: PermissionMode;
   model: AmpModelId;
   executor: Executor;
@@ -269,6 +270,7 @@ export class AmpAcpAgent implements Agent {
       cancelled: false,
       steerNextPrompt: false,
       active: false,
+      processStarted: false,
       mode: 'default',
       model: 'medium',
       executor: 'local',
@@ -485,10 +487,12 @@ If there are Cursor rules (in .cursor/rules/ or .cursorrules), Claude rules (CLA
 
     const controller = new AbortController();
     s.controller = controller;
+    const transport = s.executor === 'orb' ? this.orbTransport : this.transport;
+    if (transport.name === 'cli') s.processStarted = true;
 
     try {
-      const transport = s.executor === 'orb' ? this.orbTransport : this.transport;
       for await (const message of transport.execute({
+        sessionId: params.sessionId,
         prompt: textInput,
         options,
         signal: controller.signal,
@@ -558,9 +562,16 @@ If there are Cursor rules (in .cursor/rules/ or .cursorrules), Claude rules (CLA
     }
   }
 
+  close(): void {
+    this.transport.closeAll?.();
+  }
+
   async setSessionConfigOption(params: SetSessionConfigOptionRequest): Promise<SetSessionConfigOptionResponse> {
     const s = this.sessions.get(params.sessionId);
     if (!s) throw new Error('Session not found');
+    if (this.transport.name === 'cli' && s.processStarted) {
+      throw new Error('Session configuration cannot change after the Amp process has started');
+    }
     if (typeof params.value !== 'string') {
       throw new Error(`Unsupported value for ${params.configId}`);
     }
