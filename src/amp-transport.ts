@@ -1,5 +1,5 @@
 import { execute, type AmpOptions } from '@ampcode/sdk';
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
 
 export type AmpMcpServerConfig =
@@ -33,12 +33,15 @@ export interface AmpStreamMessage {
   subtype?: string;
   is_error?: boolean;
   error?: string;
+  parent_tool_use_id?: string | null;
   message?: {
     content: unknown;
+    stop_reason?: string | null;
   };
 }
 
 export interface AmpExecutionRequest {
+  sessionId: string;
   prompt: string;
   options: AmpExecutionOptions;
   signal: AbortSignal;
@@ -48,6 +51,8 @@ export interface AmpExecutionRequest {
 export interface AmpTransport {
   readonly name: 'cli' | 'sdk';
   execute(request: AmpExecutionRequest): AsyncIterable<AmpStreamMessage>;
+  closeSession?(sessionId: string): void;
+  closeAll?(): void;
 }
 
 const sdkTransport: AmpTransport = {
@@ -73,7 +78,7 @@ export function buildAmpSdkOptions(options: AmpExecutionOptions): AmpOptions {
   };
 }
 
-export function buildAmpCliArgs(options: AmpExecutionOptions, steer = false): string[] {
+export function buildAmpCliArgs(options: AmpExecutionOptions): string[] {
   const args: string[] = [];
 
   if (typeof options.continue === 'string') {
@@ -82,8 +87,7 @@ export function buildAmpCliArgs(options: AmpExecutionOptions, steer = false): st
     args.push('threads', 'continue', '--last');
   }
 
-  args.push('--execute', '--stream-json');
-  if (steer) args.push('--stream-json-input');
+  args.push('--execute', '--stream-json', '--stream-json-input');
   args.push('--no-archive-after-execute');
   if (options.mode) args.push('--mode', options.mode);
   if (options.dangerouslyAllowAll) args.push('--dangerously-allow-all');
@@ -93,68 +97,234 @@ export function buildAmpCliArgs(options: AmpExecutionOptions, steer = false): st
 }
 
 function formatPromptInput(prompt: string, steer: boolean): string {
-  if (!steer) return prompt;
   return `${JSON.stringify({
     type: 'user',
     message: {
       role: 'user',
       content: [{ type: 'text', text: prompt }],
     },
-    steer: true,
+    steer,
   })}\n`;
+}
+
+interface QueuedMessage {
+  message: AmpStreamMessage;
+  promptSequence?: number;
+}
+
+interface QueueWaiter {
+  resolve(message: QueuedMessage): void;
+  reject(error: Error): void;
+}
+
+class MessageQueue {
+  private messages: QueuedMessage[] = [];
+  private waiters: QueueWaiter[] = [];
+  private error: Error | null = null;
+
+  push(message: QueuedMessage): void {
+    const waiter = this.waiters.shift();
+    if (waiter) {
+      waiter.resolve(message);
+    } else {
+      this.messages.push(message);
+    }
+  }
+
+  fail(error: Error): void {
+    if (this.error) return;
+    this.error = error;
+    for (const waiter of this.waiters.splice(0)) waiter.reject(error);
+  }
+
+  shift(signal: AbortSignal): Promise<QueuedMessage> {
+    if (signal.aborted) return Promise.reject(abortedError());
+    const message = this.messages.shift();
+    if (message) return Promise.resolve(message);
+    if (this.error) return Promise.reject(this.error);
+
+    return new Promise((resolve, reject) => {
+      const waiter: QueueWaiter = {
+        resolve: (next) => {
+          signal.removeEventListener('abort', onAbort);
+          resolve(next);
+        },
+        reject: (error) => {
+          signal.removeEventListener('abort', onAbort);
+          reject(error);
+        },
+      };
+      const onAbort = () => {
+        const index = this.waiters.indexOf(waiter);
+        if (index !== -1) this.waiters.splice(index, 1);
+        reject(abortedError());
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+      this.waiters.push(waiter);
+    });
+  }
+}
+
+interface CliSession {
+  child: ChildProcessWithoutNullStreams;
+  queue: MessageQueue;
+  stderr: Buffer[];
+  nextPromptSequence: number;
+  pendingPromptEchoes: { prompt: string; sequence: number }[];
+}
+
+function abortedError(): Error {
+  const error = new Error('Amp CLI prompt was cancelled');
+  error.name = 'AbortError';
+  return error;
+}
+
+function processExitError(
+  code: number | null,
+  processSignal: NodeJS.Signals | null,
+  stderr: Buffer[],
+): Error {
+  if (code === null) return new Error(`Amp CLI process was killed by signal ${processSignal ?? 'unknown'}`);
+  const details = Buffer.concat(stderr).toString().trim();
+  return new Error(`Amp CLI process exited with code ${code}${details ? `: ${details}` : ''}`);
+}
+
+function isPromptEcho(message: AmpStreamMessage, prompt: string): boolean {
+  if (message.type !== 'user' || !Array.isArray(message.message?.content)) return false;
+  const text = message.message.content
+    .filter((part): part is { type: 'text'; text: string } => (
+      typeof part === 'object' && part !== null &&
+      'type' in part && part.type === 'text' &&
+      'text' in part && typeof part.text === 'string'
+    ))
+    .map((part) => part.text)
+    .join('');
+  return text === prompt;
+}
+
+function isPromptComplete(message: AmpStreamMessage): boolean {
+  return message.type === 'result' || (
+    message.type === 'assistant' &&
+    message.parent_tool_use_id == null &&
+    typeof message.message?.stop_reason === 'string' &&
+    message.message.stop_reason !== 'tool_use'
+  );
 }
 
 export function createCliTransport(
   command = process.env.AMP_CLI_PATH ?? 'amp',
   commandArgs: string[] = [],
+  preserveCancelledProcess = process.env.AMP_ACP_CANCEL_MODE === 'steer',
 ): AmpTransport {
-  return {
-    name: 'cli',
-    async *execute({ prompt, options, signal, steer }) {
-      signal.throwIfAborted();
+  const sessions = new Map<string, CliSession>();
 
-      const child = spawn(command, [...commandArgs, ...buildAmpCliArgs(options, steer)], {
-        cwd: options.cwd,
-        env: { ...process.env, ...options.env },
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-      const stderr: Buffer[] = [];
-      child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
+  const closeSession = (sessionId: string): void => {
+    const session = sessions.get(sessionId);
+    if (!session) return;
+    sessions.delete(sessionId);
+    session.child.kill(process.platform === 'win32' ? 'SIGKILL' : 'SIGTERM');
+  };
 
-      const completion = new Promise<{ code: number | null; processSignal: NodeJS.Signals | null }>((resolve, reject) => {
-        child.once('error', reject);
-        child.once('close', (code, processSignal) => resolve({ code, processSignal }));
-      });
-      const abort = () => child.kill(process.platform === 'win32' ? 'SIGKILL' : 'SIGTERM');
-      signal.addEventListener('abort', abort, { once: true });
+  const startSession = (sessionId: string, options: AmpExecutionOptions): CliSession => {
+    const child = spawn(command, [...commandArgs, ...buildAmpCliArgs(options)], {
+      cwd: options.cwd,
+      env: { ...process.env, ...options.env },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const session: CliSession = {
+      child,
+      queue: new MessageQueue(),
+      stderr: [],
+      nextPromptSequence: 0,
+      pendingPromptEchoes: [],
+    };
+    sessions.set(sessionId, session);
+    const failSession = (error: Error): void => {
+      session.queue.fail(error);
+      if (sessions.get(sessionId) === session) closeSession(sessionId);
+    };
+    child.stderr.on('data', (chunk: Buffer) => session.stderr.push(chunk));
+    child.stdin.on('error', failSession);
 
-      child.stdin.on('error', () => {});
-      child.stdin.end(formatPromptInput(prompt, steer));
-
+    void (async () => {
       try {
         const lines = createInterface({ input: child.stdout, crlfDelay: Number.POSITIVE_INFINITY });
         for await (const line of lines) {
           if (!line.trim()) continue;
           try {
-            yield JSON.parse(line) as AmpStreamMessage;
+            const message = JSON.parse(line) as AmpStreamMessage;
+            const pendingEcho = session.pendingPromptEchoes[0];
+            const promptSequence = pendingEcho && isPromptEcho(message, pendingEcho.prompt)
+              ? session.pendingPromptEchoes.shift()?.sequence
+              : undefined;
+            session.queue.push({ message, promptSequence });
           } catch {
             throw new Error(`Failed to parse JSON response, raw line: ${line}`);
           }
         }
+      } catch (error) {
+        const failure = error instanceof Error ? error : new Error(String(error));
+        failSession(failure);
+      }
+    })();
 
-        const { code, processSignal } = await completion;
-        if (signal.aborted) throw new Error('Amp CLI process was aborted');
-        if (code === null) throw new Error(`Amp CLI process was killed by signal ${processSignal ?? 'unknown'}`);
-        if (code !== 0) {
-          const details = Buffer.concat(stderr).toString().trim();
-          throw new Error(`Amp CLI process exited with code ${code}${details ? `: ${details}` : ''}`);
+    child.once('error', failSession);
+    child.once('close', (code, processSignal) => {
+      if (sessions.get(sessionId) === session) sessions.delete(sessionId);
+      session.queue.fail(processExitError(code, processSignal, session.stderr));
+    });
+    return session;
+  };
+
+  const transport: AmpTransport = {
+    name: 'cli',
+    async *execute({ sessionId, prompt, options, signal, steer }) {
+      signal.throwIfAborted();
+
+      let session = sessions.get(sessionId);
+      const startedSession = session === undefined;
+      session ??= startSession(sessionId, options);
+
+      try {
+        const promptSequence = ++session.nextPromptSequence;
+        session.pendingPromptEchoes.push({ prompt, sequence: promptSequence });
+        try {
+          await new Promise<void>((resolve, reject) => {
+            session.child.stdin.write(formatPromptInput(prompt, steer), (error) => error ? reject(error) : resolve());
+          });
+        } catch (error) {
+          const index = session.pendingPromptEchoes.findIndex((pending) => pending.sequence === promptSequence);
+          if (index !== -1) session.pendingPromptEchoes.splice(index, 1);
+          throw error;
         }
-      } finally {
-        signal.removeEventListener('abort', abort);
-        if (!child.killed && child.exitCode === null) child.kill();
+        let promptEchoed = false;
+        for (;;) {
+          const queued = await session.queue.shift(signal);
+          const { message } = queued;
+          if (queued.promptSequence === promptSequence) {
+            promptEchoed = true;
+          } else if (!promptEchoed) {
+            if (message.type === 'system' && (startedSession || !steer)) yield message;
+            continue;
+          }
+          yield message;
+          if (promptEchoed && isPromptComplete(message)) return;
+        }
+      } catch (error) {
+        if (signal.aborted) {
+          if (!preserveCancelledProcess) closeSession(sessionId);
+          throw abortedError();
+        }
+        throw error;
       }
     },
+    closeSession,
+    closeAll() {
+      for (const sessionId of [...sessions.keys()]) closeSession(sessionId);
+    },
   };
+
+  return transport;
 }
 
 export function createAmpTransport(name = process.env.AMP_ACP_TRANSPORT ?? 'cli'): AmpTransport {
