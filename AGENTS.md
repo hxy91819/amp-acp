@@ -35,6 +35,7 @@ Every product change starts on an independent `feature/*` or `fix/*` branch and 
 | Branch | Source commit | Aggregate commit | Upstream feedback |
 | --- | --- | --- | --- |
 | `fix/amp-steer` | `05f1268c` | `98e1528c` | [#61](https://github.com/tao12345666333/amp-acp/issues/61) |
+| `fix/amp-persistent-steer` | `5e0d9a40` | `aa50bedc` | [#61](https://github.com/tao12345666333/amp-acp/issues/61) |
 
 Use `$open-source-fork-maintenance` before upstream synchronization, aggregate rebuilding, or local packaging. It checks new worktrees, source commit changes, upstream changes, and upstream feedback before asking for a rebase or packaging decision. When a stable-release tag pattern is configured, rebase affected source branches onto the latest matching tag and rebuild from that tag. Unreleased commits on the upstream ref after that tag are debt unless the user chooses them. When the user explicitly declines a rebase, incremental packaging on the existing local baseline remains allowed, but the registry must retain the previous upstream baseline and the result must report the outstanding upstream debt.
 <!-- open-source-fork-maintenance:end -->

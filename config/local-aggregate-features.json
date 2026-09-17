@@ -20,6 +20,20 @@
           "feedbackUrl": "https://github.com/tao12345666333/amp-acp/issues/61"
         }
       ]
+    },
+    {
+      "branch": "fix/amp-persistent-steer",
+      "lastPackaged": {
+        "sourceCommit": "5e0d9a405ad9c15be77b89575ee95a30095c9d1c",
+        "aggregateCommit": "aa50bedca1690a0fdd1438af050c358ab83169c4"
+      },
+      "upstreamIssues": [
+        {
+          "repository": "tao12345666333/amp-acp",
+          "number": 61,
+          "feedbackUrl": "https://github.com/tao12345666333/amp-acp/issues/61"
+        }
+      ]
     }
   ]
 }
