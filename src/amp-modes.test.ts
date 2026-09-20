@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
-import { mkdtemp, mkdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -69,14 +69,54 @@ describe('createAmpModeCatalog', () => {
     await expect(stat(sideEffectMarker)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  it('discovers cached workspace metadata without loading the workspace plugin', async () => {
-    const globalPluginCacheDirectory = path.join(fixtureDir, 'global-plugins');
-    const cachedPlugin = path.join(globalPluginCacheDirectory, 'ampcode.com', 'workspace', 'example@revision');
-    await mkdir(cachedPlugin, { recursive: true });
+  it('reads only plugin entry files and lets a project plugin shadow the same-named system plugin', async () => {
+    const project = path.join(fixtureDir, 'entry-precedence-project');
+    const systemPluginDirectory = path.join(fixtureDir, 'entry-precedence-system');
+    await mkdir(path.join(project, '.amp', 'plugins', 'shared-plugin', 'fixtures'), { recursive: true });
+    await mkdir(systemPluginDirectory, { recursive: true });
     await writeFile(
-      path.join(cachedPlugin, 'index.ts'),
+      path.join(project, '.amp', 'plugins', 'shared-plugin', 'index.ts'),
+      '// @amp-agent-mode {"key":"project-mode","label":"Project Mode"}\n',
+    );
+    await writeFile(
+      path.join(project, '.amp', 'plugins', 'shared-plugin', 'fixtures', 'not-imported.ts'),
+      '// @amp-agent-mode {"key":"fixture-ghost","label":"Fixture Ghost"}\n',
+    );
+    await writeFile(
+      path.join(systemPluginDirectory, 'shared-plugin.ts'),
+      '// @amp-agent-mode {"key":"shadowed-mode","label":"Shadowed Mode"}\n',
+    );
+    const catalog = createAmpModeCatalog({
+      systemPluginDirectory,
+      globalPluginCacheDirectory: path.join(fixtureDir, 'no-global-plugin'),
+      trustPluginDiscovery: false,
+    });
+
+    expect((await catalog(project)).modes.map((mode) => mode.key)).toEqual([
+      'low',
+      'medium',
+      'high',
+      'ultra',
+      'project-mode',
+    ]);
+  });
+
+  it('uses only the newest explicitly configured cached workspace plugin revision', async () => {
+    const globalPluginCacheDirectory = path.join(fixtureDir, 'global-plugins');
+    const stalePlugin = path.join(globalPluginCacheDirectory, 'ampcode.com', 'workspace', 'example@abcdef12');
+    const currentPlugin = path.join(globalPluginCacheDirectory, 'ampcode.com', 'workspace', 'example@fedcba98');
+    await mkdir(stalePlugin, { recursive: true });
+    await mkdir(currentPlugin, { recursive: true });
+    await writeFile(
+      path.join(stalePlugin, 'index.ts'),
+      '// @amp-agent-mode {"key":"stale-specialist","label":"Stale Specialist"}\n',
+    );
+    await writeFile(
+      path.join(currentPlugin, 'index.ts'),
       '// @amp-agent-mode {"key":"workspace-specialist","label":"Workspace Specialist"}\n',
     );
+    await utimes(stalePlugin, new Date(1_000), new Date(1_000));
+    await utimes(currentPlugin, new Date(2_000), new Date(2_000));
     const catalog = createAmpModeCatalog({
       globalPluginCacheDirectory,
       systemPluginDirectory: path.join(fixtureDir, 'no-system-plugin'),
@@ -87,6 +127,7 @@ describe('createAmpModeCatalog', () => {
       label: 'Workspace Specialist',
       description: 'Custom agent mode from an Amp plugin.',
     });
+    expect((await catalog(projectWithoutPlugin)).modes.map((mode) => mode.key)).not.toContain('stale-specialist');
   });
 
   it('does not load plugins through the CLI unless trusted discovery is explicitly enabled', async () => {
