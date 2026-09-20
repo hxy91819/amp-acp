@@ -11,7 +11,12 @@ const syntheticPluginMode = {
   description: 'Uses a synthetic plugin agent for specialized work.',
 };
 
-const testModeCatalog: AmpModeCatalog = async () => [...BUILTIN_AMP_MODES, syntheticPluginMode];
+const testModeCatalog: AmpModeCatalog = async (cwd) => cwd === '/tmp/discovery-error'
+  ? {
+    modes: BUILTIN_AMP_MODES,
+    diagnostic: 'Trusted Amp plugin discovery failed: fixture failure',
+  }
+  : { modes: [...BUILTIN_AMP_MODES, syntheticPluginMode] };
 
 class TestClient {
   notifications: SessionNotification[] = [];
@@ -106,6 +111,21 @@ describe('ACP Protocol End-to-End', () => {
     });
   });
 
+  it('reports incomplete discovery in the selector instead of silently falling back', async () => {
+    const session = await agentConnection.newSession({ cwd: '/tmp/discovery-error', mcpServers: [] });
+    const ampMode = session.configOptions.find((option) => option.id === 'amp-mode');
+
+    expect(ampMode).toMatchObject({
+      options: [
+        { value: 'low', name: 'Low' },
+        { value: 'medium', name: 'Medium' },
+        { value: 'high', name: 'High' },
+        { value: 'ultra', name: 'Ultra' },
+      ],
+    });
+    expect(ampMode?.description).toContain('Trusted Amp plugin discovery failed: fixture failure');
+  });
+
   it('selects a synthetic plugin mode by key and keeps its display label out of the execution value', async () => {
     const session = await agentConnection.newSession({
       cwd: '/tmp',
@@ -134,7 +154,7 @@ describe('ACP Protocol End-to-End', () => {
       sessionId: session.sessionId,
       configId: 'amp-mode',
       value: 'not-discovered',
-    })).rejects.toThrow('Internal error');
+    })).rejects.toThrow('Invalid params: Unsupported Amp mode: not-discovered');
   });
 
   it('should handle newSession with MCP servers', async () => {

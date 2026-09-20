@@ -103,7 +103,9 @@ By default, amp-acp executes the installed Amp CLI directly through its streamin
 
 ### Plugin-defined modes
 
-For every new ACP session, amp-acp runs `amp plugins list` in that session's working directory and adds the discovered `agent mode` keys to the selector alongside `low`, `medium`, `high`, and `ultra`. This makes project, personal, and workspace plugins visible in the project where Amp loads them. Successful discovery is briefly cached per working directory; a failed discovery is logged, offers only the four built-ins for that session, and is retried by a later session.
+For every new ACP session, amp-acp reads Amp's documented `// @amp-agent-mode {"key":"…","label":"…"}` metadata from `.amp/plugins/` in the session working directory and the system plugin directory. It never imports or evaluates those plugin files merely to build the selector. Add checked-out Personal or Workspace plugin source directories/files to `AMP_ACP_MODE_METADATA_PATHS` (separated by the platform path delimiter) when their static metadata should also be visible.
+
+Amp has no public, non-executing CLI command that lists runtime modes supplied only by Personal or Workspace plugins. Set `AMP_ACP_TRUST_PLUGIN_DISCOVERY=1` only when the session's project plugins are trusted to opt into `amp plugins list`; that command loads plugin code and adds runtime-only keys whose labels are unavailable from its output. Successful discovery is briefly cached per working directory; failures appear in the Amp Mode option description, expose only safely discovered modes, and retry with the next session.
 
 The selector value is the plugin mode's stable key, which amp-acp passes to Amp as `--mode <key>`. A plugin label is UI metadata and a plugin's underlying `provider/model` ID belongs to its agent definition; amp-acp does not infer either from a key or change model routing itself. A value that was not advertised for the session is rejected rather than silently falling back to another mode. Amp fixes the mode when the first prompt starts, so choose it before sending that prompt.
 

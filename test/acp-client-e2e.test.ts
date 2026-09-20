@@ -7,7 +7,7 @@ import {
   type SessionNotification,
 } from '@agentclientprotocol/sdk';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { Readable, Writable } from 'node:stream';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,6 +19,11 @@ let fakeAmpPath: string;
 
 beforeAll(async () => {
   fixtureDir = await mkdtemp(path.join(os.tmpdir(), 'amp-acp-e2e-'));
+  await mkdir(path.join(fixtureDir, '.amp', 'plugins'), { recursive: true });
+  await writeFile(
+    path.join(fixtureDir, '.amp', 'plugins', 'synthetic-mode.ts'),
+    '// @amp-agent-mode {"key":"synthetic-specialist","label":"Synthetic Specialist"}\n',
+  );
   fakeAmpPath = path.join(fixtureDir, 'amp.mjs');
   await writeFile(fakeAmpPath, `#!/usr/bin/env node
 import { createInterface } from 'node:readline';
@@ -135,6 +140,7 @@ describe('ACP client to compiled amp-acp binary', () => {
 
           return {
             initialized,
+            session,
             first,
             second,
             cancelled,
@@ -143,6 +149,8 @@ describe('ACP client to compiled amp-acp binary', () => {
         });
 
       expect(result.initialized.agentInfo?.name).toBe('amp-acp');
+      expect(result.session.configOptions?.find((option) => option.id === 'amp-mode')?.options)
+        .toContainEqual(expect.objectContaining({ value: 'synthetic-specialist', name: 'Synthetic Specialist' }));
       expect(result.first.stopReason).toBe('end_turn');
       expect(result.second.stopReason).toBe('end_turn');
       expect(result.cancelled.stopReason).toBe('cancelled');

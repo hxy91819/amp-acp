@@ -44,7 +44,7 @@ function isPermissionMode(mode: string): mode is PermissionMode {
   return PERMISSION_MODES.some((permissionMode) => permissionMode === mode);
 }
 
-function buildSessionConfigOptions(s: Pick<SessionState, 'mode' | 'model' | 'ampModes'>): SessionConfigOption[] {
+function buildSessionConfigOptions(s: Pick<SessionState, 'mode' | 'ampModeKey' | 'ampModes' | 'modeDiscoveryDiagnostic'>): SessionConfigOption[] {
   return [
     {
       type: 'select',
@@ -71,9 +71,11 @@ function buildSessionConfigOptions(s: Pick<SessionState, 'mode' | 'model' | 'amp
       type: 'select',
       id: CONFIG_AMP_MODE,
       name: 'Amp Mode',
-      description: 'Select the Amp agent mode. Amp owns model routing for the selected mode.',
+      description: s.modeDiscoveryDiagnostic
+        ? `Select the Amp agent mode. ${s.modeDiscoveryDiagnostic}`
+        : 'Select the Amp agent mode. Amp owns model routing for the selected mode.',
       category: 'model',
-      currentValue: s.model,
+      currentValue: s.ampModeKey,
       options: s.ampModes.map((mode) => ({
         value: mode.key,
         name: mode.label,
@@ -92,8 +94,9 @@ interface SessionState {
   processStarted: boolean;
   mode: PermissionMode;
   /** Stable Amp mode key. This is distinct from the mode's display label and model ID. */
-  model: string;
+  ampModeKey: string;
   ampModes: readonly AmpModeOption[];
+  modeDiscoveryDiagnostic?: string;
   modeLocked: boolean;
   mcpConfig: AmpMcpConfig;
   cwd: string;
@@ -165,7 +168,7 @@ export class AmpAcpAgent implements Agent {
 
     const mcpConfig = convertAcpMcpServersToAmpConfig(params.mcpServers);
     const cwd = params.cwd || process.cwd();
-    const ampModes = await this.modeCatalog(cwd);
+    const modeCatalog = await this.modeCatalog(cwd);
 
     const session: SessionState = {
       threadId: null,
@@ -175,8 +178,9 @@ export class AmpAcpAgent implements Agent {
       active: false,
       processStarted: false,
       mode: 'default',
-      model: 'medium',
-      ampModes,
+      ampModeKey: 'medium',
+      ampModes: modeCatalog.modes,
+      modeDiscoveryDiagnostic: modeCatalog.diagnostic,
       modeLocked: false,
       mcpConfig,
       cwd,
@@ -261,7 +265,7 @@ If there are Cursor rules (in .cursor/rules/ or .cursorrules), Claude rules (CLA
     const options: AmpExecutionOptions = {
       cwd: s.cwd,
       env: { TERM: 'dumb' },
-      mode: s.model,
+      mode: s.ampModeKey,
     };
 
     if (s.mode === 'bypass') {
@@ -357,35 +361,55 @@ If there are Cursor rules (in .cursor/rules/ or .cursorrules), Claude rules (CLA
       throw new Error('Session configuration cannot change after the Amp process has started');
     }
     if (typeof params.value !== 'string') {
-      throw new Error(`Unsupported value for ${params.configId}`);
+      throw RequestError.invalidParams(
+        { configId: params.configId, value: params.value },
+        `Unsupported value for ${params.configId}`,
+      );
     }
 
     switch (params.configId) {
       case CONFIG_PERMISSION:
         if (!isPermissionMode(params.value)) {
-          throw new Error(`Unsupported permission mode: ${params.value}`);
+          throw RequestError.invalidParams(
+            { configId: params.configId, value: params.value },
+            `Unsupported permission mode: ${params.value}`,
+          );
         }
         s.mode = params.value;
         break;
       case CONFIG_AMP_MODE:
         if (s.modeLocked) {
-          throw new Error('Amp mode is fixed after the first prompt. Start a new session to select a different mode.');
+          throw RequestError.invalidParams(
+            { configId: params.configId, value: params.value },
+            'Amp mode is fixed after the first prompt. Start a new session to select a different mode.',
+          );
         }
         const modeValue = params.value.trim().toLowerCase();
         const matches = s.ampModes.filter((mode) =>
           mode.key.toLowerCase() === modeValue || mode.label.toLowerCase() === modeValue,
         );
         if (matches.length !== 1) {
-          throw new Error(
+          throw RequestError.invalidParams(
+            { configId: params.configId, value: params.value },
             `Unsupported Amp mode: ${params.value}. Select a mode advertised for this session or start a new session after enabling its plugin.`,
+          );
+        }
+        const selectedMode = matches[0];
+        if (!selectedMode) {
+          throw RequestError.invalidParams(
+            { configId: params.configId, value: params.value },
+            `Unsupported Amp mode: ${params.value}.`,
           );
         }
         // Preserve the stable key: labels are for display, and model IDs belong
         // to the plugin definition rather than to this ACP adapter.
-        s.model = matches[0]!.key;
+        s.ampModeKey = selectedMode.key;
         break;
       default:
-        throw new Error(`Unsupported config option: ${params.configId}`);
+        throw RequestError.invalidParams(
+          { configId: params.configId, value: params.value },
+          `Unsupported config option: ${params.configId}`,
+        );
     }
 
     const configOptions = buildSessionConfigOptions(s);

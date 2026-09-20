@@ -1,10 +1,19 @@
 import { spawn } from 'node:child_process';
+import { readdir, readFile, stat } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import path from 'node:path';
 
 /** A selectable Amp mode. `key` is the execution value; `label` is UI-only. */
 export interface AmpModeOption {
   key: string;
   label: string;
   description: string;
+}
+
+export interface AmpModeCatalogResult {
+  modes: readonly AmpModeOption[];
+  /** A message suitable for an ACP config-option description when discovery is incomplete. */
+  diagnostic?: string;
 }
 
 /** The four built-in Amp modes remain available regardless of installed plugins. */
@@ -32,24 +41,136 @@ export const BUILTIN_AMP_MODES: readonly AmpModeOption[] = [
 ];
 
 /** Returns the modes selectable in one session working directory. */
-export type AmpModeCatalog = (cwd: string) => Promise<readonly AmpModeOption[]>;
+export type AmpModeCatalog = (cwd: string) => Promise<AmpModeCatalogResult>;
 
+interface ParsedMetadata {
+  modes: AmpModeOption[];
+  diagnostics: string[];
+}
+
+const AGENT_MODE_METADATA_LINE = /^\s*\/\/\s*@amp-agent-mode\s+(.+?)\s*$/gm;
 const PLUGIN_MODE_LINE = /^\s*agent mode:\s*(\S+)\s*$/i;
+const PLUGIN_SOURCE_EXTENSIONS = new Set(['.js', '.ts']);
 
-/** Extracts stable plugin mode keys from the supported `amp plugins list` output. */
+function isAgentModeMetadata(value: unknown): value is { key: string; label: string } {
+  if (typeof value !== 'object' || value === null) return false;
+  const key = Reflect.get(value, 'key');
+  const label = Reflect.get(value, 'label');
+  return typeof key === 'string' && key.trim().length > 0 && typeof label === 'string' && label.trim().length > 0;
+}
+
+/**
+ * Parses Amp's documented static mode directive. It reads only source text and
+ * deliberately does not import or execute the plugin.
+ */
+export function parsePluginAgentModeMetadata(source: string): ParsedMetadata {
+  const modes: AmpModeOption[] = [];
+  const diagnostics: string[] = [];
+  const seenKeys = new Set<string>();
+  const seenLabels = new Set<string>();
+  for (const match of source.matchAll(AGENT_MODE_METADATA_LINE)) {
+    const serialized = match[1];
+    if (!serialized) continue;
+    try {
+      const metadata: unknown = JSON.parse(serialized);
+      if (!isAgentModeMetadata(metadata)) throw new Error('invalid metadata');
+      const key = metadata.key.trim();
+      const label = metadata.label.trim();
+      const keyIdentity = key.toLowerCase();
+      const labelIdentity = label.toLowerCase();
+      if (seenKeys.has(keyIdentity) || seenLabels.has(labelIdentity)) {
+        diagnostics.push(`Ignored duplicate @amp-agent-mode metadata for ${key}.`);
+        continue;
+      }
+      seenKeys.add(keyIdentity);
+      seenLabels.add(labelIdentity);
+      modes.push({ key, label, description: 'Custom agent mode from an Amp plugin.' });
+    } catch {
+      diagnostics.push('Ignored malformed @amp-agent-mode metadata.');
+    }
+  }
+  return { modes, diagnostics };
+}
+
+/** Extracts runtime-only mode keys from the official `amp plugins list` output. */
 export function parsePluginAgentModeKeys(output: string): string[] {
   const keys: string[] = [];
   const seen = new Set<string>();
   for (const line of output.split('\n')) {
     const match = PLUGIN_MODE_LINE.exec(line);
-    if (!match) continue;
-    const key = match[1]!;
+    const key = match?.[1];
+    if (!key) continue;
     const identity = key.toLowerCase();
     if (seen.has(identity)) continue;
     seen.add(identity);
     keys.push(key);
   }
   return keys;
+}
+
+function isNotFoundError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && Reflect.get(error, 'code') === 'ENOENT';
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function findPluginSourceFiles(target: string): Promise<string[]> {
+  let targetStats: Awaited<ReturnType<typeof stat>>;
+  try {
+    targetStats = await stat(target);
+  } catch (error) {
+    if (isNotFoundError(error)) return [];
+    throw error;
+  }
+  if (targetStats.isFile()) {
+    return PLUGIN_SOURCE_EXTENSIONS.has(path.extname(target)) ? [target] : [];
+  }
+  if (!targetStats.isDirectory()) return [];
+
+  const files: string[] = [];
+  const entries = await readdir(target, { withFileTypes: true });
+  for (const entry of entries) {
+    const entryPath = path.join(target, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...await findPluginSourceFiles(entryPath));
+    } else if (entry.isFile() && PLUGIN_SOURCE_EXTENSIONS.has(path.extname(entry.name))) {
+      files.push(entryPath);
+    }
+  }
+  return files;
+}
+
+function mergePluginModes(pluginModes: readonly AmpModeOption[], diagnostics: string[]): AmpModeOption[] {
+  const modes = [...BUILTIN_AMP_MODES];
+  const seenKeys = new Set(modes.map((mode) => mode.key.toLowerCase()));
+  const seenLabels = new Set(modes.map((mode) => mode.label.toLowerCase()));
+  for (const mode of pluginModes) {
+    const keyIdentity = mode.key.toLowerCase();
+    const labelIdentity = mode.label.toLowerCase();
+    if (seenKeys.has(keyIdentity) || seenLabels.has(labelIdentity)) {
+      diagnostics.push(`Ignored conflicting Amp plugin mode ${mode.key}.`);
+      continue;
+    }
+    seenKeys.add(keyIdentity);
+    seenLabels.add(labelIdentity);
+    modes.push(mode);
+  }
+  return modes;
+}
+
+async function readStaticPluginModes(metadataPaths: readonly string[]): Promise<ParsedMetadata> {
+  const modes: AmpModeOption[] = [];
+  const diagnostics: string[] = [];
+  for (const metadataPath of metadataPaths) {
+    for (const sourceFile of await findPluginSourceFiles(metadataPath)) {
+      const parsed = parsePluginAgentModeMetadata(await readFile(sourceFile, 'utf8'));
+      modes.push(...parsed.modes);
+      diagnostics.push(...parsed.diagnostics.map((diagnostic) => `${diagnostic} Source: ${sourceFile}`));
+    }
+  }
+  return { modes, diagnostics };
 }
 
 function runAmpPluginsList(
@@ -96,66 +217,95 @@ export interface AmpModeCatalogOptions {
   /** Amp CLI command; defaults to AMP_CLI_PATH or `amp`. */
   command?: string;
   commandArgs?: readonly string[];
-  /** Kill a stalled discovery command after this duration. Defaults to 10 seconds. */
+  /** Kill trusted runtime discovery after this duration. Defaults to 10 seconds. */
   timeoutMs?: number;
   /** Cache successful discovery per working directory for this duration. Defaults to 60 seconds. */
   cacheTtlMs?: number;
-  /** Overrides CLI discovery for tests. */
+  /** Extra directories or files containing trusted static plugin metadata. */
+  metadataPaths?: readonly string[];
+  /** Overrides the default system plugin directory; mainly for tests. */
+  systemPluginDirectory?: string;
+  /** Opt into the CLI command that loads plugins; defaults to AMP_ACP_TRUST_PLUGIN_DISCOVERY=1. */
+  trustPluginDiscovery?: boolean;
+  /** Overrides trusted CLI discovery for tests. */
   listPluginsOutput?: (cwd: string) => Promise<string>;
 }
 
-function withPluginModes(keys: readonly string[]): AmpModeOption[] {
-  const modes = [...BUILTIN_AMP_MODES];
-  const seen = new Set(modes.map((mode) => mode.key.toLowerCase()));
-  for (const key of keys) {
-    const identity = key.toLowerCase();
-    if (seen.has(identity)) continue;
-    seen.add(identity);
-    // `amp plugins list` publishes a stable key but no label, description, or
-    // pinned-model metadata. Do not infer any of those from the mode key.
-    modes.push({
-      key,
-      label: key,
-      description: 'Custom agent mode from an Amp plugin.',
-    });
-  }
-  return modes;
+function metadataPathsFor(cwd: string, options: AmpModeCatalogOptions): string[] {
+  const systemPluginDirectory = options.systemPluginDirectory
+    ?? path.join(process.env.XDG_CONFIG_HOME ?? path.join(homedir(), '.config'), 'amp', 'plugins');
+  const configuredPaths = process.env.AMP_ACP_MODE_METADATA_PATHS
+    ?.split(path.delimiter)
+    .map((candidate) => candidate.trim())
+    .filter(Boolean)
+    ?? [];
+  return [path.join(cwd, '.amp', 'plugins'), systemPluginDirectory, ...configuredPaths, ...(options.metadataPaths ?? [])];
 }
 
 /**
- * Builds a per-project catalog from the official `amp plugins list` command.
- * Plugin registration is project, user, and workspace dependent, so successful
- * discoveries are cached per cwd. Failures are logged and deliberately not
- * cached; the current session exposes only built-ins and a later session retries.
+ * Builds a mode catalog from Amp's documented static metadata. Project and
+ * system plugin files are read without evaluating their code. Personal and
+ * workspace plugins supplied only by Amp have no public static-list command;
+ * callers may supply a checked-out metadata path, or explicitly opt into
+ * `amp plugins list` when they trust loading every plugin in the session cwd.
  */
 export function createAmpModeCatalog(options: AmpModeCatalogOptions = {}): AmpModeCatalog {
   const command = options.command ?? process.env.AMP_CLI_PATH ?? 'amp';
   const commandArgs = options.commandArgs ?? [];
   const timeoutMs = options.timeoutMs ?? 10_000;
   const cacheTtlMs = options.cacheTtlMs ?? 60_000;
-  const cache = new Map<string, { expiresAt: number; promise: Promise<readonly AmpModeOption[]> }>();
+  const trustPluginDiscovery = options.trustPluginDiscovery ?? process.env.AMP_ACP_TRUST_PLUGIN_DISCOVERY === '1';
+  const cache = new Map<string, { expiresAt: number; promise: Promise<AmpModeCatalogResult> }>();
 
-  const discover = async (cwd: string): Promise<readonly AmpModeOption[]> => {
-    const output = options.listPluginsOutput
-      ? await options.listPluginsOutput(cwd)
-      : await runAmpPluginsList(command, commandArgs, cwd, timeoutMs);
-    return withPluginModes(parsePluginAgentModeKeys(output));
+  const discover = async (cwd: string): Promise<AmpModeCatalogResult> => {
+    const diagnostics: string[] = [];
+    let staticModes: ParsedMetadata;
+    try {
+      staticModes = await readStaticPluginModes(metadataPathsFor(cwd, options));
+      diagnostics.push(...staticModes.diagnostics);
+    } catch (error) {
+      const detail = errorMessage(error);
+      console.error(`[acp] failed to discover static Amp plugin metadata for ${cwd}:`, error);
+      diagnostics.push(`Static Amp plugin metadata discovery failed: ${detail}`);
+      staticModes = { modes: [], diagnostics: [] };
+    }
+
+    const pluginModes = [...staticModes.modes];
+    if (trustPluginDiscovery) {
+      try {
+        const output = options.listPluginsOutput
+          ? await options.listPluginsOutput(cwd)
+          : await runAmpPluginsList(command, commandArgs, cwd, timeoutMs);
+        pluginModes.push(...parsePluginAgentModeKeys(output).map((key) => ({
+          key,
+          label: key,
+          description: 'Custom agent mode from an Amp plugin. Its label is unavailable from the CLI.',
+        })));
+      } catch (error) {
+        const detail = errorMessage(error);
+        console.error(`[acp] trusted Amp plugin discovery failed for ${cwd}:`, error);
+        diagnostics.push(`Trusted Amp plugin discovery failed: ${detail}`);
+      }
+    }
+
+    const modes = mergePluginModes(pluginModes, diagnostics);
+    return diagnostics.length > 0 ? { modes, diagnostic: diagnostics.join(' ') } : { modes };
   };
 
   return (cwd) => {
     const cached = cache.get(cwd);
     if (cached && cached.expiresAt > Date.now()) return cached.promise;
 
-    let discovery: Promise<readonly AmpModeOption[]>;
+    let discovery: Promise<AmpModeCatalogResult>;
     discovery = discover(cwd).catch((error: unknown) => {
-      if (cache.get(cwd)?.promise === discovery) cache.delete(cwd);
-      console.error(
-        `[acp] failed to discover Amp plugin modes for ${cwd}; offering built-in modes only:`,
-        error,
-      );
-      return BUILTIN_AMP_MODES;
+      const detail = errorMessage(error);
+      console.error(`[acp] unexpected Amp mode discovery failure for ${cwd}:`, error);
+      return { modes: BUILTIN_AMP_MODES, diagnostic: `Amp mode discovery failed: ${detail}` };
     });
     cache.set(cwd, { expiresAt: Date.now() + cacheTtlMs, promise: discovery });
+    void discovery.then((result) => {
+      if (result.diagnostic && cache.get(cwd)?.promise === discovery) cache.delete(cwd);
+    });
     return discovery;
   };
 }
