@@ -251,6 +251,12 @@ process.exit(3);
     });
   });
 
+  it('passes a plugin mode key through to both execution transports', () => {
+    const pluginMode = 'synthetic-specialist';
+    expect(buildAmpCliArgs({ ...baseOptions, mode: pluginMode })).toContain(pluginMode);
+    expect(buildAmpSdkOptions({ ...baseOptions, mode: pluginMode })).toMatchObject({ mode: pluginMode });
+  });
+
   it('builds arguments for continuing a specific CLI thread', () => {
     expect(buildAmpCliArgs({
       ...baseOptions,

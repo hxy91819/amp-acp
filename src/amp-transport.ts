@@ -18,10 +18,13 @@ export type AmpMcpServerConfig =
 
 export type AmpMcpConfig = Record<string, AmpMcpServerConfig>;
 
+/** A built-in or plugin-defined Amp mode key. Amp resolves it to an agent and model. */
+export type AmpMode = string & {};
+
 export interface AmpExecutionOptions {
   cwd: string;
   env?: Record<string, string>;
-  mode?: 'low' | 'medium' | 'high' | 'ultra';
+  mode?: AmpMode;
   executor?: 'local' | 'orb';
   project?: string;
   dangerouslyAllowAll?: boolean;
