@@ -247,7 +247,7 @@ export class AmpAcpAgent implements Agent {
 
     const mcpConfig = convertAcpMcpServersToAmpConfig(params.mcpServers);
     const cwd = params.cwd || process.cwd();
-    const modeCatalog = await this.modeCatalog(cwd);
+    const modeCatalogResult = await this.modeCatalog(cwd);
 
     const session: SessionState = {
       threadId: null,
@@ -259,8 +259,8 @@ export class AmpAcpAgent implements Agent {
       mode: 'default',
       executor: 'local',
       ampModeKey: 'medium',
-      ampModes: modeCatalog.modes,
-      modeDiscoveryDiagnostic: modeCatalog.diagnostic,
+      ampModes: modeCatalogResult.modes,
+      modeDiscoveryDiagnostic: modeCatalogResult.diagnostic,
       modeLocked: false,
       mcpConfig,
       cwd,

@@ -149,6 +149,8 @@ function mergePluginModes(pluginModes: readonly AmpModeOption[], diagnostics: st
   for (const mode of pluginModes) {
     const keyIdentity = mode.key.toLowerCase();
     const labelIdentity = mode.label.toLowerCase();
+    const sameMode = modes.find((candidate) => candidate.key.toLowerCase() === keyIdentity);
+    if (sameMode?.label.toLowerCase() === labelIdentity) continue;
     if (seenKeys.has(keyIdentity) || seenLabels.has(labelIdentity)) {
       diagnostics.push(`Ignored conflicting Amp plugin mode ${mode.key}.`);
       continue;
@@ -225,6 +227,8 @@ export interface AmpModeCatalogOptions {
   metadataPaths?: readonly string[];
   /** Overrides the default system plugin directory; mainly for tests. */
   systemPluginDirectory?: string;
+  /** Overrides the default global plugin metadata cache; mainly for tests. */
+  globalPluginCacheDirectory?: string;
   /** Opt into the CLI command that loads plugins; defaults to AMP_ACP_TRUST_PLUGIN_DISCOVERY=1. */
   trustPluginDiscovery?: boolean;
   /** Overrides trusted CLI discovery for tests. */
@@ -232,22 +236,31 @@ export interface AmpModeCatalogOptions {
 }
 
 function metadataPathsFor(cwd: string, options: AmpModeCatalogOptions): string[] {
+  const cacheHome = process.env.XDG_CACHE_HOME ?? path.join(homedir(), '.cache');
   const systemPluginDirectory = options.systemPluginDirectory
     ?? path.join(process.env.XDG_CONFIG_HOME ?? path.join(homedir(), '.config'), 'amp', 'plugins');
+  const globalPluginCacheDirectory = options.globalPluginCacheDirectory
+    ?? path.join(cacheHome, 'amp', 'global-plugins');
   const configuredPaths = process.env.AMP_ACP_MODE_METADATA_PATHS
     ?.split(path.delimiter)
     .map((candidate) => candidate.trim())
     .filter(Boolean)
     ?? [];
-  return [path.join(cwd, '.amp', 'plugins'), systemPluginDirectory, ...configuredPaths, ...(options.metadataPaths ?? [])];
+  return [
+    path.join(cwd, '.amp', 'plugins'),
+    systemPluginDirectory,
+    globalPluginCacheDirectory,
+    ...configuredPaths,
+    ...(options.metadataPaths ?? []),
+  ];
 }
 
 /**
  * Builds a mode catalog from Amp's documented static metadata. Project and
- * system plugin files are read without evaluating their code. Personal and
- * workspace plugins supplied only by Amp have no public static-list command;
- * callers may supply a checked-out metadata path, or explicitly opt into
- * `amp plugins list` when they trust loading every plugin in the session cwd.
+ * system plugin files, plus the Amp global-plugin metadata cache, are read
+ * without evaluating their code. Callers may supply additional checked-out
+ * metadata paths, or explicitly opt into `amp plugins list` when they trust
+ * loading every plugin that Amp makes effective in the session cwd.
  */
 export function createAmpModeCatalog(options: AmpModeCatalogOptions = {}): AmpModeCatalog {
   const command = options.command ?? process.env.AMP_CLI_PATH ?? 'amp';
