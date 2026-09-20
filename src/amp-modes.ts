@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import type { Dirent } from 'node:fs';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -116,7 +117,24 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function findPluginSourceFiles(target: string): Promise<string[]> {
+interface PluginEntry {
+  identity: string;
+  entryFile: string;
+}
+
+function isPluginSourceFile(filePath: string): boolean {
+  return PLUGIN_SOURCE_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+}
+
+function pluginIdentityFromFile(filePath: string): string {
+  return path.basename(filePath, path.extname(filePath)).toLowerCase();
+}
+
+function pluginIdentityFromDirectory(directory: string): string {
+  return path.basename(directory).toLowerCase();
+}
+
+async function findPluginEntries(target: string): Promise<PluginEntry[]> {
   let targetStats: Awaited<ReturnType<typeof stat>>;
   try {
     targetStats = await stat(target);
@@ -125,21 +143,94 @@ async function findPluginSourceFiles(target: string): Promise<string[]> {
     throw error;
   }
   if (targetStats.isFile()) {
-    return PLUGIN_SOURCE_EXTENSIONS.has(path.extname(target)) ? [target] : [];
+    return isPluginSourceFile(target) ? [{ identity: pluginIdentityFromFile(target), entryFile: target }] : [];
   }
   if (!targetStats.isDirectory()) return [];
 
-  const files: string[] = [];
+  const plugins: PluginEntry[] = [];
   const entries = await readdir(target, { withFileTypes: true });
   for (const entry of entries) {
     const entryPath = path.join(target, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...await findPluginSourceFiles(entryPath));
-    } else if (entry.isFile() && PLUGIN_SOURCE_EXTENSIONS.has(path.extname(entry.name))) {
-      files.push(entryPath);
+    if (entry.isFile() && isPluginSourceFile(entry.name)) {
+      plugins.push({ identity: pluginIdentityFromFile(entry.name), entryFile: entryPath });
+      continue;
+    }
+    if (!entry.isDirectory()) continue;
+
+    const typescriptEntry = path.join(entryPath, 'index.ts');
+    const javascriptEntry = path.join(entryPath, 'index.js');
+    try {
+      const entryStats = await stat(typescriptEntry);
+      if (entryStats.isFile()) {
+        plugins.push({ identity: pluginIdentityFromDirectory(entryPath), entryFile: typescriptEntry });
+        continue;
+      }
+    } catch (error) {
+      if (!isNotFoundError(error)) throw error;
+    }
+    try {
+      const entryStats = await stat(javascriptEntry);
+      if (entryStats.isFile()) {
+        plugins.push({ identity: pluginIdentityFromDirectory(entryPath), entryFile: javascriptEntry });
+      }
+    } catch (error) {
+      if (!isNotFoundError(error)) throw error;
     }
   }
-  return files;
+  return plugins;
+}
+
+const CACHE_REVISION_DIRECTORY = /^(.+)@([0-9a-f]{8,})$/i;
+
+async function findCachedPluginEntries(cacheDirectory: string): Promise<PluginEntry[]> {
+  const candidates = new Map<string, { entry: PluginEntry; modifiedAt: number }>();
+
+  const visit = async (directory: string): Promise<void> => {
+    let entries: Dirent<string>[];
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch (error) {
+      if (isNotFoundError(error)) return;
+      throw error;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const entryDirectory = path.join(directory, entry.name);
+      const cacheMatch = CACHE_REVISION_DIRECTORY.exec(entry.name);
+      if (!cacheMatch?.[1]) {
+        await visit(entryDirectory);
+        continue;
+      }
+      const typescriptEntry = path.join(entryDirectory, 'index.ts');
+      const javascriptEntry = path.join(entryDirectory, 'index.js');
+      let entryFile: string | undefined;
+      try {
+        if ((await stat(typescriptEntry)).isFile()) entryFile = typescriptEntry;
+      } catch (error) {
+        if (!isNotFoundError(error)) throw error;
+      }
+      if (!entryFile) {
+        try {
+          if ((await stat(javascriptEntry)).isFile()) entryFile = javascriptEntry;
+        } catch (error) {
+          if (!isNotFoundError(error)) throw error;
+        }
+      }
+      if (!entryFile) continue;
+      const identity = `${directory}\0${cacheMatch[1].toLowerCase()}`;
+      const modifiedAt = (await stat(entryDirectory)).mtimeMs;
+      const previous = candidates.get(identity);
+      if (!previous || previous.modifiedAt < modifiedAt) {
+        candidates.set(identity, {
+          entry: { identity: cacheMatch[1].toLowerCase(), entryFile },
+          modifiedAt,
+        });
+      }
+    }
+  };
+
+  await visit(cacheDirectory);
+  return [...candidates.values()].map((candidate) => candidate.entry);
 }
 
 function mergePluginModes(pluginModes: readonly AmpModeOption[], diagnostics: string[]): AmpModeOption[] {
@@ -149,8 +240,6 @@ function mergePluginModes(pluginModes: readonly AmpModeOption[], diagnostics: st
   for (const mode of pluginModes) {
     const keyIdentity = mode.key.toLowerCase();
     const labelIdentity = mode.label.toLowerCase();
-    const sameMode = modes.find((candidate) => candidate.key.toLowerCase() === keyIdentity);
-    if (sameMode?.label.toLowerCase() === labelIdentity) continue;
     if (seenKeys.has(keyIdentity) || seenLabels.has(labelIdentity)) {
       diagnostics.push(`Ignored conflicting Amp plugin mode ${mode.key}.`);
       continue;
@@ -162,15 +251,13 @@ function mergePluginModes(pluginModes: readonly AmpModeOption[], diagnostics: st
   return modes;
 }
 
-async function readStaticPluginModes(metadataPaths: readonly string[]): Promise<ParsedMetadata> {
+async function readStaticPluginModes(entries: readonly PluginEntry[]): Promise<ParsedMetadata> {
   const modes: AmpModeOption[] = [];
   const diagnostics: string[] = [];
-  for (const metadataPath of metadataPaths) {
-    for (const sourceFile of await findPluginSourceFiles(metadataPath)) {
-      const parsed = parsePluginAgentModeMetadata(await readFile(sourceFile, 'utf8'));
-      modes.push(...parsed.modes);
-      diagnostics.push(...parsed.diagnostics.map((diagnostic) => `${diagnostic} Source: ${sourceFile}`));
-    }
+  for (const entry of entries) {
+    const parsed = parsePluginAgentModeMetadata(await readFile(entry.entryFile, 'utf8'));
+    modes.push(...parsed.modes);
+    diagnostics.push(...parsed.diagnostics.map((diagnostic) => `${diagnostic} Source: ${entry.entryFile}`));
   }
   return { modes, diagnostics };
 }
@@ -223,11 +310,13 @@ export interface AmpModeCatalogOptions {
   timeoutMs?: number;
   /** Cache successful discovery per working directory for this duration. Defaults to 60 seconds. */
   cacheTtlMs?: number;
-  /** Extra directories or files containing trusted static plugin metadata. */
-  metadataPaths?: readonly string[];
   /** Overrides the default system plugin directory; mainly for tests. */
   systemPluginDirectory?: string;
-  /** Overrides the default global plugin metadata cache; mainly for tests. */
+  /** Additional Personal Plugin locations, processed above Workspace plugins. */
+  personalPluginDirectories?: readonly string[];
+  /** Additional Workspace Plugin locations, processed below Personal plugins. */
+  workspacePluginDirectories?: readonly string[];
+  /** An explicitly trusted cache root whose newest cached entry per plugin is treated as Workspace metadata. */
   globalPluginCacheDirectory?: string;
   /** Opt into the CLI command that loads plugins; defaults to AMP_ACP_TRUST_PLUGIN_DISCOVERY=1. */
   trustPluginDiscovery?: boolean;
@@ -235,32 +324,46 @@ export interface AmpModeCatalogOptions {
   listPluginsOutput?: (cwd: string) => Promise<string>;
 }
 
-function metadataPathsFor(cwd: string, options: AmpModeCatalogOptions): string[] {
-  const cacheHome = process.env.XDG_CACHE_HOME ?? path.join(homedir(), '.cache');
-  const systemPluginDirectory = options.systemPluginDirectory
-    ?? path.join(process.env.XDG_CONFIG_HOME ?? path.join(homedir(), '.config'), 'amp', 'plugins');
-  const globalPluginCacheDirectory = options.globalPluginCacheDirectory
-    ?? path.join(cacheHome, 'amp', 'global-plugins');
-  const configuredPaths = process.env.AMP_ACP_MODE_METADATA_PATHS
+function configuredDirectories(variable: string): string[] {
+  return process.env[variable]
     ?.split(path.delimiter)
     .map((candidate) => candidate.trim())
     .filter(Boolean)
     ?? [];
-  return [
-    path.join(cwd, '.amp', 'plugins'),
-    systemPluginDirectory,
-    globalPluginCacheDirectory,
-    ...configuredPaths,
-    ...(options.metadataPaths ?? []),
-  ];
+}
+
+async function selectEffectivePluginEntries(cwd: string, options: AmpModeCatalogOptions): Promise<PluginEntry[]> {
+  const systemPluginDirectory = options.systemPluginDirectory
+    ?? path.join(process.env.XDG_CONFIG_HOME ?? path.join(homedir(), '.config'), 'amp', 'plugins');
+  const selected = new Map<string, PluginEntry>();
+  const addEntries = (entries: readonly PluginEntry[]) => {
+    for (const entry of entries) selected.set(entry.identity, entry);
+  };
+
+  // Later sources replace the entire same-named plugin, matching Amp's
+  // workspace < personal < system < project precedence.
+  const configuredCache = options.globalPluginCacheDirectory ?? process.env.AMP_ACP_GLOBAL_PLUGIN_CACHE_DIR;
+  if (configuredCache) addEntries(await findCachedPluginEntries(configuredCache));
+  for (const directory of [
+    ...configuredDirectories('AMP_ACP_WORKSPACE_PLUGIN_PATHS'),
+    ...(options.workspacePluginDirectories ?? []),
+  ]) addEntries(await findPluginEntries(directory));
+  for (const directory of [
+    ...configuredDirectories('AMP_ACP_PERSONAL_PLUGIN_PATHS'),
+    ...(options.personalPluginDirectories ?? []),
+  ]) addEntries(await findPluginEntries(directory));
+  addEntries(await findPluginEntries(systemPluginDirectory));
+  addEntries(await findPluginEntries(path.join(cwd, '.amp', 'plugins')));
+  return [...selected.values()];
 }
 
 /**
  * Builds a mode catalog from Amp's documented static metadata. Project and
- * system plugin files, plus the Amp global-plugin metadata cache, are read
- * without evaluating their code. Callers may supply additional checked-out
- * metadata paths, or explicitly opt into `amp plugins list` when they trust
- * loading every plugin that Amp makes effective in the session cwd.
+ * system plugin files are read without evaluating their code. Sources are
+ * selected by Amp's project > system > personal > workspace precedence before
+ * metadata is read. Personal/workspace locations and an optional cache root
+ * must be explicitly configured because cache contents alone do not prove a
+ * plugin is currently enabled for this Amp account or workspace.
  */
 export function createAmpModeCatalog(options: AmpModeCatalogOptions = {}): AmpModeCatalog {
   const command = options.command ?? process.env.AMP_CLI_PATH ?? 'amp';
@@ -274,7 +377,7 @@ export function createAmpModeCatalog(options: AmpModeCatalogOptions = {}): AmpMo
     const diagnostics: string[] = [];
     let staticModes: ParsedMetadata;
     try {
-      staticModes = await readStaticPluginModes(metadataPathsFor(cwd, options));
+      staticModes = await readStaticPluginModes(await selectEffectivePluginEntries(cwd, options));
       diagnostics.push(...staticModes.diagnostics);
     } catch (error) {
       const detail = errorMessage(error);
