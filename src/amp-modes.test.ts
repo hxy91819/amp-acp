@@ -130,6 +130,69 @@ describe('createAmpModeCatalog', () => {
     expect((await catalog(projectWithoutPlugin)).modes.map((mode) => mode.key)).not.toContain('stale-specialist');
   });
 
+  it('lists only configured mode keys in their configured order', async () => {
+    const catalog = createAmpModeCatalog({
+      visibleModeKeys: ['synthetic-specialist', 'high', 'low'],
+      systemPluginDirectory: path.join(fixtureDir, 'no-system-plugin'),
+      globalPluginCacheDirectory: path.join(fixtureDir, 'no-global-plugin'),
+    });
+
+    expect((await catalog(projectWithPlugin)).modes).toEqual([
+      syntheticMode,
+      BUILTIN_AMP_MODES[2],
+      BUILTIN_AMP_MODES[0],
+    ]);
+  });
+
+  it('reads the ordered visible keys from AMP_ACP_MODE_KEYS', async () => {
+    const previous = process.env.AMP_ACP_MODE_KEYS;
+    process.env.AMP_ACP_MODE_KEYS = 'high,synthetic-specialist,low';
+    try {
+      const catalog = createAmpModeCatalog({
+        systemPluginDirectory: path.join(fixtureDir, 'no-system-plugin'),
+        globalPluginCacheDirectory: path.join(fixtureDir, 'no-global-plugin'),
+      });
+
+      expect((await catalog(projectWithPlugin)).modes).toEqual([
+        BUILTIN_AMP_MODES[2],
+        syntheticMode,
+        BUILTIN_AMP_MODES[0],
+      ]);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.AMP_ACP_MODE_KEYS;
+      } else {
+        process.env.AMP_ACP_MODE_KEYS = previous;
+      }
+    }
+  });
+
+  it('hides configured keys that are not discovered and reports the mismatch', async () => {
+    const catalog = createAmpModeCatalog({
+      visibleModeKeys: ['synthetic-specialist', 'not-available'],
+      systemPluginDirectory: path.join(fixtureDir, 'no-system-plugin'),
+      globalPluginCacheDirectory: path.join(fixtureDir, 'no-global-plugin'),
+    });
+
+    await expect(catalog(projectWithPlugin)).resolves.toEqual({
+      modes: [syntheticMode],
+      diagnostic: 'Configured Amp mode not-available was not discovered for this session and is hidden.',
+    });
+  });
+
+  it('returns no selectable modes when every configured key is unavailable', async () => {
+    const catalog = createAmpModeCatalog({
+      visibleModeKeys: ['not-available'],
+      systemPluginDirectory: path.join(fixtureDir, 'no-system-plugin'),
+      globalPluginCacheDirectory: path.join(fixtureDir, 'no-global-plugin'),
+    });
+
+    await expect(catalog(projectWithoutPlugin)).resolves.toEqual({
+      modes: [],
+      diagnostic: 'Configured Amp mode not-available was not discovered for this session and is hidden.',
+    });
+  });
+
   it('does not load plugins through the CLI unless trusted discovery is explicitly enabled', async () => {
     let calls = 0;
     const catalog = createAmpModeCatalog({

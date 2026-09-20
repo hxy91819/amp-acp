@@ -16,6 +16,13 @@ const testModeCatalog: AmpModeCatalog = async (cwd) => cwd === '/tmp/discovery-e
     modes: BUILTIN_AMP_MODES,
     diagnostic: 'Trusted Amp plugin discovery failed: fixture failure',
   }
+  : cwd === '/tmp/empty-dial'
+    ? {
+      modes: [],
+      diagnostic: 'Configured Amp mode synthetic-specialist was not discovered for this session and is hidden.',
+    }
+    : cwd === '/tmp/custom-dial-order'
+      ? { modes: [syntheticPluginMode, BUILTIN_AMP_MODES[0]!] }
   : { modes: [...BUILTIN_AMP_MODES, syntheticPluginMode] };
 
 class TestClient {
@@ -120,6 +127,21 @@ describe('ACP Protocol End-to-End', () => {
     });
   });
 
+  it('uses the first advertised mode only when the established default is hidden', async () => {
+    const session = await agentConnection.newSession({
+      cwd: '/tmp/custom-dial-order',
+      mcpServers: [],
+    });
+
+    expect(session.configOptions.find((option) => option.id === 'amp-mode')).toMatchObject({
+      currentValue: 'synthetic-specialist',
+      options: [
+        { value: 'synthetic-specialist', name: 'Synthetic Specialist' },
+        { value: 'low', name: 'Low' },
+      ],
+    });
+  });
+
   it('should handle setSessionConfigOption', async () => {
     const session = await agentConnection.newSession({
       cwd: '/tmp',
@@ -199,6 +221,26 @@ describe('ACP Protocol End-to-End', () => {
       configId: 'amp-mode',
       value: 'not-discovered',
     })).rejects.toThrow('Invalid params: Unsupported Amp mode: not-discovered');
+  });
+
+  it('rejects a built-in mode hidden from the selector', async () => {
+    const session = await agentConnection.newSession({
+      cwd: '/tmp/custom-dial-order',
+      mcpServers: [],
+    });
+
+    await expect(agentConnection.setSessionConfigOption({
+      sessionId: session.sessionId,
+      configId: 'amp-mode',
+      value: 'ultra',
+    })).rejects.toThrow('Invalid params: Unsupported Amp mode: ultra');
+  });
+
+  it('rejects session creation when no configured Dial mode was discovered', async () => {
+    await expect(agentConnection.newSession({
+      cwd: '/tmp/empty-dial',
+      mcpServers: [],
+    })).rejects.toThrow('Invalid params: No configured Amp modes were discovered for this session. Configured Amp mode synthetic-specialist was not discovered for this session and is hidden.');
   });
 
   it('should handle newSession with MCP servers', async () => {

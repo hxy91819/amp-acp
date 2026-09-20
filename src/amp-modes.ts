@@ -17,7 +17,7 @@ export interface AmpModeCatalogResult {
   diagnostic?: string;
 }
 
-/** The four built-in Amp modes remain available regardless of installed plugins. */
+/** Built-in Amp modes are always part of the discovered catalog before optional filtering. */
 export const BUILTIN_AMP_MODES: readonly AmpModeOption[] = [
   {
     key: 'low',
@@ -251,6 +251,43 @@ function mergePluginModes(pluginModes: readonly AmpModeOption[], diagnostics: st
   return modes;
 }
 
+/**
+ * Selects an ordered subset of discovered modes by their stable keys. The
+ * configuration deliberately cannot invent a mode: each key must have been
+ * verified through the ordinary discovery path for this session.
+ */
+function selectVisibleModes(
+  discoveredModes: readonly AmpModeOption[],
+  visibleModeKeys: readonly string[] | undefined,
+  diagnostics: string[],
+): AmpModeOption[] {
+  if (visibleModeKeys === undefined) return [...discoveredModes];
+
+  const byKey = new Map(discoveredModes.map((mode) => [mode.key.toLowerCase(), mode]));
+  const selected: AmpModeOption[] = [];
+  const seen = new Set<string>();
+  for (const configuredKey of visibleModeKeys) {
+    const key = configuredKey.trim();
+    if (!key) continue;
+    const identity = key.toLowerCase();
+    if (seen.has(identity)) {
+      diagnostics.push(`Ignored duplicate configured Amp mode ${key}.`);
+      continue;
+    }
+    seen.add(identity);
+    const discovered = byKey.get(identity);
+    if (!discovered) {
+      diagnostics.push(`Configured Amp mode ${key} was not discovered for this session and is hidden.`);
+      continue;
+    }
+    selected.push(discovered);
+  }
+  if (selected.length === 0 && visibleModeKeys.every((key) => !key.trim())) {
+    diagnostics.push('Configured Amp mode list does not contain any mode keys.');
+  }
+  return selected;
+}
+
 async function readStaticPluginModes(entries: readonly PluginEntry[]): Promise<ParsedMetadata> {
   const modes: AmpModeOption[] = [];
   const diagnostics: string[] = [];
@@ -318,6 +355,8 @@ export interface AmpModeCatalogOptions {
   workspacePluginDirectories?: readonly string[];
   /** An explicitly trusted cache root whose newest cached entry per plugin is treated as Workspace metadata. */
   globalPluginCacheDirectory?: string;
+  /** Ordered stable mode keys to expose; defaults to the AMP_ACP_MODE_KEYS environment variable when set. */
+  visibleModeKeys?: readonly string[];
   /** Opt into the CLI command that loads plugins; defaults to AMP_ACP_TRUST_PLUGIN_DISCOVERY=1. */
   trustPluginDiscovery?: boolean;
   /** Overrides trusted CLI discovery for tests. */
@@ -330,6 +369,11 @@ function configuredDirectories(variable: string): string[] {
     .map((candidate) => candidate.trim())
     .filter(Boolean)
     ?? [];
+}
+
+function configuredModeKeys(): string[] | undefined {
+  const configured = process.env.AMP_ACP_MODE_KEYS;
+  return configured === undefined ? undefined : configured.split(',');
 }
 
 async function selectEffectivePluginEntries(cwd: string, options: AmpModeCatalogOptions): Promise<PluginEntry[]> {
@@ -371,6 +415,7 @@ export function createAmpModeCatalog(options: AmpModeCatalogOptions = {}): AmpMo
   const timeoutMs = options.timeoutMs ?? 10_000;
   const cacheTtlMs = options.cacheTtlMs ?? 60_000;
   const trustPluginDiscovery = options.trustPluginDiscovery ?? process.env.AMP_ACP_TRUST_PLUGIN_DISCOVERY === '1';
+  const visibleModeKeys = options.visibleModeKeys ?? configuredModeKeys();
   const cache = new Map<string, { expiresAt: number; promise: Promise<AmpModeCatalogResult> }>();
 
   const discover = async (cwd: string): Promise<AmpModeCatalogResult> => {
@@ -404,7 +449,7 @@ export function createAmpModeCatalog(options: AmpModeCatalogOptions = {}): AmpMo
       }
     }
 
-    const modes = mergePluginModes(pluginModes, diagnostics);
+    const modes = selectVisibleModes(mergePluginModes(pluginModes, diagnostics), visibleModeKeys, diagnostics);
     return diagnostics.length > 0 ? { modes, diagnostic: diagnostics.join(' ') } : { modes };
   };
 
@@ -416,7 +461,11 @@ export function createAmpModeCatalog(options: AmpModeCatalogOptions = {}): AmpMo
     discovery = discover(cwd).catch((error: unknown) => {
       const detail = errorMessage(error);
       console.error(`[acp] unexpected Amp mode discovery failure for ${cwd}:`, error);
-      return { modes: BUILTIN_AMP_MODES, diagnostic: `Amp mode discovery failed: ${detail}` };
+      const diagnostics = [`Amp mode discovery failed: ${detail}`];
+      return {
+        modes: selectVisibleModes(BUILTIN_AMP_MODES, visibleModeKeys, diagnostics),
+        diagnostic: diagnostics.join(' '),
+      };
     });
     cache.set(cwd, { expiresAt: Date.now() + cacheTtlMs, promise: discovery });
     void discovery.then((result) => {
