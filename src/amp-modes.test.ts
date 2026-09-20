@@ -1,66 +1,107 @@
-import { describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import {
   BUILTIN_AMP_MODES,
   createAmpModeCatalog,
-  parsePluginAgentModeKeys,
+  parsePluginAgentModeMetadata,
 } from './amp-modes.js';
 
-describe('parsePluginAgentModeKeys', () => {
-  it('extracts only agent-mode keys from the official plugin-list output', () => {
-    const output = [
-      '✓ sample-plugin (.amp/plugins/sample.ts) active',
-      '  agent: synthetic-specialist-agent',
-      '  agent mode: synthetic-specialist',
-      '  tool: sample-tool',
-      '  agent mode: synthetic-specialist',
-      '  agent modes: not-a-mode',
-      '  agent mode:',
-    ].join('\n');
+const syntheticMode = {
+  key: 'synthetic-specialist',
+  label: 'Synthetic Specialist',
+  description: 'Custom agent mode from an Amp plugin.',
+};
+const staticMetadata = '// @amp-agent-mode {"key":"synthetic-specialist","label":"Synthetic Specialist"}\n';
 
-    expect(parsePluginAgentModeKeys(output)).toEqual(['synthetic-specialist']);
+describe('parsePluginAgentModeMetadata', () => {
+  it('extracts a plugin mode key and label without evaluating plugin code', () => {
+    expect(parsePluginAgentModeMetadata(staticMetadata)).toEqual({
+      modes: [syntheticMode],
+      diagnostics: [],
+    });
+  });
+
+  it('reports malformed metadata without inventing a mode or model ID', () => {
+    expect(parsePluginAgentModeMetadata('// @amp-agent-mode {"key":42}\n')).toMatchObject({
+      modes: [],
+      diagnostics: ['Ignored malformed @amp-agent-mode metadata.'],
+    });
   });
 });
 
 describe('createAmpModeCatalog', () => {
-  it('discovers plugin mode keys per working directory and preserves the built-in modes', async () => {
-    const calls: string[] = [];
+  let fixtureDir = '';
+  let projectWithPlugin = '';
+  let projectWithoutPlugin = '';
+
+  beforeAll(async () => {
+    fixtureDir = await mkdtemp(path.join(os.tmpdir(), 'amp-mode-catalog-test-'));
+    projectWithPlugin = path.join(fixtureDir, 'with-plugin');
+    projectWithoutPlugin = path.join(fixtureDir, 'without-plugin');
+    await mkdir(path.join(projectWithPlugin, '.amp', 'plugins'), { recursive: true });
+    await mkdir(projectWithoutPlugin, { recursive: true });
+    await writeFile(path.join(projectWithPlugin, '.amp', 'plugins', 'synthetic.ts'), staticMetadata);
+  });
+
+  afterAll(async () => {
+    if (fixtureDir) await rm(fixtureDir, { recursive: true, force: true });
+  });
+
+  it('discovers static plugin metadata per working directory and preserves the built-in modes', async () => {
+    const catalog = createAmpModeCatalog({ systemPluginDirectory: path.join(fixtureDir, 'no-system-plugin') });
+
+    const withPlugin = await catalog(projectWithPlugin);
+    const withoutPlugin = await catalog(projectWithoutPlugin);
+    await catalog(projectWithPlugin);
+
+    expect(withPlugin).toEqual({ modes: [...BUILTIN_AMP_MODES, syntheticMode] });
+    expect(withoutPlugin).toEqual({ modes: BUILTIN_AMP_MODES });
+  });
+
+  it('does not load plugins through the CLI unless trusted discovery is explicitly enabled', async () => {
+    let calls = 0;
     const catalog = createAmpModeCatalog({
-      listPluginsOutput: async (cwd) => {
-        calls.push(cwd);
-        return cwd === '/workspace/with-plugin'
-          ? '  agent mode: synthetic-specialist\n'
-          : '';
+      systemPluginDirectory: path.join(fixtureDir, 'no-system-plugin'),
+      listPluginsOutput: async () => {
+        calls += 1;
+        return '  agent mode: dynamic-only\n';
       },
     });
 
-    const withPlugin = await catalog('/workspace/with-plugin');
-    const withoutPlugin = await catalog('/workspace/without-plugin');
-    await catalog('/workspace/with-plugin');
-
-    expect(withPlugin).toEqual([
-      ...BUILTIN_AMP_MODES,
-      {
-        key: 'synthetic-specialist',
-        label: 'synthetic-specialist',
-        description: 'Custom agent mode from an Amp plugin.',
-      },
-    ]);
-    expect(withoutPlugin).toEqual(BUILTIN_AMP_MODES);
-    expect(calls).toEqual(['/workspace/with-plugin', '/workspace/without-plugin']);
+    expect((await catalog(projectWithPlugin)).modes).toEqual([...BUILTIN_AMP_MODES, syntheticMode]);
+    expect(calls).toBe(0);
   });
 
-  it('does not cache a failed discovery, so a later session can discover a recovered plugin', async () => {
+  it('adds trusted runtime-only mode keys and retries a failed trusted discovery', async () => {
     let attempts = 0;
     const catalog = createAmpModeCatalog({
+      trustPluginDiscovery: true,
+      systemPluginDirectory: path.join(fixtureDir, 'no-system-plugin'),
       listPluginsOutput: async () => {
         attempts += 1;
         if (attempts === 1) throw new Error('temporary plugin host failure');
-        return '  agent mode: synthetic-specialist\n';
+        return '  agent mode: dynamic-only\n';
       },
     });
 
-    expect(await catalog('/workspace/retry')).toEqual(BUILTIN_AMP_MODES);
-    expect((await catalog('/workspace/retry')).map((mode) => mode.key)).toContain('synthetic-specialist');
+    const failed = await catalog(projectWithoutPlugin);
+    expect(failed).toMatchObject({
+      modes: BUILTIN_AMP_MODES,
+      diagnostic: 'Trusted Amp plugin discovery failed: temporary plugin host failure',
+    });
+
+    expect(await catalog(projectWithoutPlugin)).toEqual({
+      modes: [
+        ...BUILTIN_AMP_MODES,
+        {
+          key: 'dynamic-only',
+          label: 'dynamic-only',
+          description: 'Custom agent mode from an Amp plugin. Its label is unavailable from the CLI.',
+        },
+      ],
+    });
     expect(attempts).toBe(2);
   });
 });
