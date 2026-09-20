@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -35,14 +35,19 @@ describe('createAmpModeCatalog', () => {
   let fixtureDir = '';
   let projectWithPlugin = '';
   let projectWithoutPlugin = '';
+  let sideEffectMarker = '';
 
   beforeAll(async () => {
     fixtureDir = await mkdtemp(path.join(os.tmpdir(), 'amp-mode-catalog-test-'));
     projectWithPlugin = path.join(fixtureDir, 'with-plugin');
     projectWithoutPlugin = path.join(fixtureDir, 'without-plugin');
+    sideEffectMarker = path.join(projectWithPlugin, 'plugin-was-executed');
     await mkdir(path.join(projectWithPlugin, '.amp', 'plugins'), { recursive: true });
     await mkdir(projectWithoutPlugin, { recursive: true });
-    await writeFile(path.join(projectWithPlugin, '.amp', 'plugins', 'synthetic.ts'), staticMetadata);
+    await writeFile(
+      path.join(projectWithPlugin, '.amp', 'plugins', 'synthetic.ts'),
+      `${staticMetadata}writeFileSync(${JSON.stringify(sideEffectMarker)}, 'executed');\n`,
+    );
   });
 
   afterAll(async () => {
@@ -50,7 +55,10 @@ describe('createAmpModeCatalog', () => {
   });
 
   it('discovers static plugin metadata per working directory and preserves the built-in modes', async () => {
-    const catalog = createAmpModeCatalog({ systemPluginDirectory: path.join(fixtureDir, 'no-system-plugin') });
+    const catalog = createAmpModeCatalog({
+      systemPluginDirectory: path.join(fixtureDir, 'no-system-plugin'),
+      globalPluginCacheDirectory: path.join(fixtureDir, 'no-global-plugin'),
+    });
 
     const withPlugin = await catalog(projectWithPlugin);
     const withoutPlugin = await catalog(projectWithoutPlugin);
@@ -58,12 +66,34 @@ describe('createAmpModeCatalog', () => {
 
     expect(withPlugin).toEqual({ modes: [...BUILTIN_AMP_MODES, syntheticMode] });
     expect(withoutPlugin).toEqual({ modes: BUILTIN_AMP_MODES });
+    await expect(stat(sideEffectMarker)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('discovers cached workspace metadata without loading the workspace plugin', async () => {
+    const globalPluginCacheDirectory = path.join(fixtureDir, 'global-plugins');
+    const cachedPlugin = path.join(globalPluginCacheDirectory, 'ampcode.com', 'workspace', 'example@revision');
+    await mkdir(cachedPlugin, { recursive: true });
+    await writeFile(
+      path.join(cachedPlugin, 'index.ts'),
+      '// @amp-agent-mode {"key":"workspace-specialist","label":"Workspace Specialist"}\n',
+    );
+    const catalog = createAmpModeCatalog({
+      globalPluginCacheDirectory,
+      systemPluginDirectory: path.join(fixtureDir, 'no-system-plugin'),
+    });
+
+    expect((await catalog(projectWithoutPlugin)).modes).toContainEqual({
+      key: 'workspace-specialist',
+      label: 'Workspace Specialist',
+      description: 'Custom agent mode from an Amp plugin.',
+    });
   });
 
   it('does not load plugins through the CLI unless trusted discovery is explicitly enabled', async () => {
     let calls = 0;
     const catalog = createAmpModeCatalog({
       systemPluginDirectory: path.join(fixtureDir, 'no-system-plugin'),
+      globalPluginCacheDirectory: path.join(fixtureDir, 'no-global-plugin'),
       listPluginsOutput: async () => {
         calls += 1;
         return '  agent mode: dynamic-only\n';
@@ -79,6 +109,7 @@ describe('createAmpModeCatalog', () => {
     const catalog = createAmpModeCatalog({
       trustPluginDiscovery: true,
       systemPluginDirectory: path.join(fixtureDir, 'no-system-plugin'),
+      globalPluginCacheDirectory: path.join(fixtureDir, 'no-global-plugin'),
       listPluginsOutput: async () => {
         attempts += 1;
         if (attempts === 1) throw new Error('temporary plugin host failure');
