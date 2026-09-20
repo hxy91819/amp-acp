@@ -169,6 +169,19 @@ export class AmpAcpAgent implements Agent {
     const mcpConfig = convertAcpMcpServersToAmpConfig(params.mcpServers);
     const cwd = params.cwd || process.cwd();
     const modeCatalogResult = await this.modeCatalog(cwd);
+    if (modeCatalogResult.modes.length === 0) {
+      const detail = modeCatalogResult.diagnostic
+        ? ` ${modeCatalogResult.diagnostic}`
+        : '';
+      throw RequestError.invalidParams(
+        { configId: CONFIG_AMP_MODE },
+        `No configured Amp modes were discovered for this session.${detail}`,
+      );
+    }
+    // Preserve the adapter's established default when it remains selectable;
+    // a Dial that omits it explicitly falls back to its first visible key.
+    const defaultAmpMode = modeCatalogResult.modes.find((mode) => mode.key === 'medium')
+      ?? modeCatalogResult.modes[0]!;
 
     const session: SessionState = {
       threadId: null,
@@ -178,7 +191,7 @@ export class AmpAcpAgent implements Agent {
       active: false,
       processStarted: false,
       mode: 'default',
-      ampModeKey: 'medium',
+      ampModeKey: defaultAmpMode.key,
       ampModes: modeCatalogResult.modes,
       modeDiscoveryDiagnostic: modeCatalogResult.diagnostic,
       modeLocked: false,

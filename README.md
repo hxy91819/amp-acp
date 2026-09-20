@@ -88,7 +88,7 @@ Run `amp login` before starting amp-acp. The adapter and CLI share the same Amp 
 - **Streaming responses** — Amp messages, tool calls, and thinking are streamed in real-time via ACP
 - **Image support** — Handles image content blocks from Amp (base64 and URL)
 - **MCP passthrough** — MCP servers configured in Zed are automatically passed through to Amp
-- **Session configuration** — Configure permissions (*Default* or *Bypass*) and select built-in (`low`, `medium`, `high`, `ultra`) or plugin-defined Amp agent modes via ACP config options
+- **Session configuration** — Configure permissions (*Default* or *Bypass*) and select discovered built-in or plugin-defined Amp agent modes via ACP config options
 - **`/init` command** — Type `/init` to generate an `AGENTS.md` file for your project
 - **Conversation continuity** — Thread context is preserved across multiple prompts within a session
 - **Native steering** — A prompt submitted after ACP cancellation is marked as an Amp steer instead of waiting in the thread queue
@@ -110,6 +110,18 @@ Amp has no public non-executing command that proves which Personal or Workspace 
 Set `AMP_ACP_TRUST_PLUGIN_DISCOVERY=1` only when every project, personal, and workspace plugin that Amp will load is trusted to opt into `amp plugins list`; that command loads plugin code and adds runtime-only keys whose labels are unavailable from its output. Successful discovery is briefly cached per working directory; failures appear in the Amp Mode option description, expose only safely discovered modes, and retry with the next session.
 
 The selector value is the plugin mode's stable key, which amp-acp passes to Amp as `--mode <key>`. A plugin label is UI metadata and a plugin's underlying `provider/model` ID belongs to its agent definition; amp-acp does not infer either from a key or change model routing itself. A value that was not advertised for the session is rejected rather than silently falling back to another mode. Amp fixes the mode when the first prompt starts, so choose it before sending that prompt.
+
+### Restricting the ACP selector to a saved Dial
+
+Amp's mode catalog is broader than its Dial. To expose only an ordered subset in an ACP client, set `AMP_ACP_MODE_KEYS` to a comma-separated list of stable mode keys, for example:
+
+```sh
+AMP_ACP_MODE_KEYS=low,medium,high,reviewer
+```
+
+The adapter preserves this order and only exposes entries that its normal static discovery has verified for the session. It keeps its established `medium` default when that key remains visible, and otherwise defaults to the first configured visible key. A missing configured key is reported in the option diagnostic and remains hidden; if none of the configured keys is available, session creation fails clearly instead of falling back to another mode. The selected key is still passed to Amp unchanged, so Amp remains responsible for model routing and billing.
+
+This is an explicit configuration snapshot. Amp does not currently publish a non-executing CLI interface for reading the effective account Dial, so amp-acp does not attempt to infer or automatically synchronize it. Update `AMP_ACP_MODE_KEYS` when the desired Dial changes.
 
 Native steering uses the CLI transport because Amp exposes the steer marker through `--stream-json-input`. Set `AMP_ACP_CANCEL_MODE=steer` for clients such as BB that represent steering as ACP cancellation followed immediately by another prompt. In that mode, the adapter keeps the input stream alive so the next prompt writes `{"steer":true}` to the active Amp process; closing the ACP connection still terminates it. Without the setting, cancellation terminates Amp as required by the standard ACP stop behavior. CLI mode and permission options must be selected before the first prompt; start a new ACP session to change them afterward. The SDK compatibility transport does not currently expose the steer marker.
 
