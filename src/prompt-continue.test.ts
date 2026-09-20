@@ -28,7 +28,7 @@ const syntheticPluginMode = {
   label: 'Synthetic Specialist',
   description: 'Uses a synthetic plugin agent for specialized work.',
 };
-const testModeCatalog = async () => [...BUILTIN_AMP_MODES, syntheticPluginMode];
+const testModeCatalog = async () => ({ modes: [...BUILTIN_AMP_MODES, syntheticPluginMode] });
 
 const mockClient = {
   sessionUpdate: async () => {},
