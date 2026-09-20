@@ -88,7 +88,7 @@ Run `amp login` before starting amp-acp. The adapter and CLI share the same Amp 
 - **Streaming responses** — Amp messages, tool calls, and thinking are streamed in real-time via ACP
 - **Image support** — Handles image content blocks from Amp (base64 and URL)
 - **MCP passthrough** — MCP servers configured in Zed are automatically passed through to Amp
-- **Session configuration** — Configure permissions (*Default* or *Bypass*) and the current Amp mode (`low`, `medium`, `high`, or `ultra`) via ACP config options
+- **Session configuration** — Configure permissions (*Default* or *Bypass*) and select built-in (`low`, `medium`, `high`, `ultra`) or plugin-defined Amp agent modes via ACP config options
 - **`/init` command** — Type `/init` to generate an `AGENTS.md` file for your project
 - **Conversation continuity** — Thread context is preserved across multiple prompts within a session
 - **Native steering** — A prompt submitted after ACP cancellation is marked as an Amp steer instead of waiting in the thread queue
@@ -99,7 +99,13 @@ When the environment variable `AMP_ACP_CONTINUE_LATEST=1` is set, the first prom
 
 ### Amp execution transport
 
-By default, amp-acp executes the installed Amp CLI directly through its streaming JSON interface. Set `AMP_ACP_TRANSPORT=sdk` to use `@ampcode/sdk` as a compatibility fallback; both transports support the current `low`, `medium`, `high`, and `ultra` Amp modes.
+By default, amp-acp executes the installed Amp CLI directly through its streaming JSON interface. Set `AMP_ACP_TRANSPORT=sdk` to use `@ampcode/sdk` as a compatibility fallback; both transports pass the selected built-in or plugin-defined Amp mode through to Amp.
+
+### Plugin-defined modes
+
+For every new ACP session, amp-acp runs `amp plugins list` in that session's working directory and adds the discovered `agent mode` keys to the selector alongside `low`, `medium`, `high`, and `ultra`. This makes project, personal, and workspace plugins visible in the project where Amp loads them. Successful discovery is briefly cached per working directory; a failed discovery is logged, offers only the four built-ins for that session, and is retried by a later session.
+
+The selector value is the plugin mode's stable key, which amp-acp passes to Amp as `--mode <key>`. A plugin label is UI metadata and a plugin's underlying `provider/model` ID belongs to its agent definition; amp-acp does not infer either from a key or change model routing itself. A value that was not advertised for the session is rejected rather than silently falling back to another mode. Amp fixes the mode when the first prompt starts, so choose it before sending that prompt.
 
 Native steering uses the CLI transport because Amp exposes the steer marker through `--stream-json-input`. Set `AMP_ACP_CANCEL_MODE=steer` for clients such as BB that represent steering as ACP cancellation followed immediately by another prompt. In that mode, the adapter keeps the input stream alive so the next prompt writes `{"steer":true}` to the active Amp process; closing the ACP connection still terminates it. Without the setting, cancellation terminates Amp as required by the standard ACP stop behavior. CLI mode and permission options must be selected before the first prompt; start a new ACP session to change them afterward. The SDK compatibility transport does not currently expose the steer marker.
 

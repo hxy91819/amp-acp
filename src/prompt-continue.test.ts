@@ -14,10 +14,18 @@ mock.module('@ampcode/sdk', () => ({
   },
 }));
 
-const [{ AmpAcpAgent }, { createAmpTransport }] = await Promise.all([
+const [{ AmpAcpAgent }, { createAmpTransport }, { BUILTIN_AMP_MODES }] = await Promise.all([
   import('./server.js'),
   import('./amp-transport.js'),
+  import('./amp-modes.js'),
 ]);
+
+const syntheticPluginMode = {
+  key: 'synthetic-specialist',
+  label: 'Synthetic Specialist',
+  description: 'Uses a synthetic plugin agent for specialized work.',
+};
+const testModeCatalog = async () => [...BUILTIN_AMP_MODES, syntheticPluginMode];
 
 const mockClient = {
   sessionUpdate: async () => {},
@@ -36,7 +44,7 @@ describe('AmpAcpAgent prompt() continue option', () => {
   beforeEach(async () => {
     capturedCalls.length = 0;
     delete process.env.AMP_ACP_CONTINUE_LATEST;
-    agent = new AmpAcpAgent(mockClient, createAmpTransport('sdk'));
+    agent = new AmpAcpAgent(mockClient, createAmpTransport('sdk'), { modeCatalog: testModeCatalog });
     await agent.initialize({ protocolVersion: 1, clientCapabilities: {} });
   });
 
@@ -70,6 +78,36 @@ describe('AmpAcpAgent prompt() continue option', () => {
 
     expect(capturedCalls).toHaveLength(1);
     expect(capturedCalls[0]!.options.mode).toBe('ultra');
+  });
+
+  it('passes a selected plugin mode key to the SDK instead of its display label', async () => {
+    const session = await agent.newSession({ cwd: '/tmp', mcpServers: [] });
+    await agent.setSessionConfigOption({
+      sessionId: session.sessionId,
+      configId: 'amp-mode',
+      value: 'Synthetic Specialist',
+    });
+    await agent.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: 'text', text: 'hello' }],
+    });
+
+    expect(capturedCalls).toHaveLength(1);
+    expect(capturedCalls[0]!.options.mode).toBe('synthetic-specialist');
+  });
+
+  it('locks Amp mode after the first prompt starts', async () => {
+    const session = await agent.newSession({ cwd: '/tmp', mcpServers: [] });
+    await agent.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: 'text', text: 'hello' }],
+    });
+
+    await expect(agent.setSessionConfigOption({
+      sessionId: session.sessionId,
+      configId: 'amp-mode',
+      value: 'synthetic-specialist',
+    })).rejects.toThrow('Amp mode is fixed after the first prompt');
   });
 
   it('passes low mode to the SDK', async () => {

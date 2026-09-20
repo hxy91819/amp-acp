@@ -27,6 +27,7 @@ import {
   type AmpExecutionOptions,
   type AmpTransport,
 } from './amp-transport.js';
+import { createAmpModeCatalog, type AmpModeCatalog, type AmpModeOption } from './amp-modes.js';
 import { convertAcpMcpServersToAmpConfig, type AmpMcpConfig } from './mcp-config.js';
 import { toAcpNotifications } from './to-acp.js';
 import path from 'node:path';
@@ -37,41 +38,13 @@ const CONFIG_PERMISSION = 'permission';
 const CONFIG_AMP_MODE = 'amp-mode';
 const PERMISSION_MODES = ['default', 'bypass'] as const;
 
-const AMP_MODELS = [
-  {
-    modelId: 'low',
-    name: 'Low',
-    description: 'Fast and economical for simple, well-defined tasks.',
-  },
-  {
-    modelId: 'medium',
-    name: 'Medium',
-    description: 'Balanced capability and cost for everyday coding tasks.',
-  },
-  {
-    modelId: 'high',
-    name: 'High',
-    description: 'Greater capability and reasoning for difficult tasks.',
-  },
-  {
-    modelId: 'ultra',
-    name: 'Ultra',
-    description: 'Maximum capability for the most demanding tasks.',
-  },
-] as const;
-
-type AmpModelId = typeof AMP_MODELS[number]['modelId'];
 type PermissionMode = typeof PERMISSION_MODES[number];
-
-function isAmpModelId(modelId: string): modelId is AmpModelId {
-  return AMP_MODELS.some((model) => model.modelId === modelId);
-}
 
 function isPermissionMode(mode: string): mode is PermissionMode {
   return PERMISSION_MODES.some((permissionMode) => permissionMode === mode);
 }
 
-function buildSessionConfigOptions(s: Pick<SessionState, 'mode' | 'model'>): SessionConfigOption[] {
+function buildSessionConfigOptions(s: Pick<SessionState, 'mode' | 'model' | 'ampModes'>): SessionConfigOption[] {
   return [
     {
       type: 'select',
@@ -98,13 +71,13 @@ function buildSessionConfigOptions(s: Pick<SessionState, 'mode' | 'model'>): Ses
       type: 'select',
       id: CONFIG_AMP_MODE,
       name: 'Amp Mode',
-      description: 'Select the Amp execution mode.',
+      description: 'Select the Amp agent mode. Amp owns model routing for the selected mode.',
       category: 'model',
       currentValue: s.model,
-      options: AMP_MODELS.map((model) => ({
-        value: model.modelId,
-        name: model.name,
-        description: model.description,
+      options: s.ampModes.map((mode) => ({
+        value: mode.key,
+        name: mode.label,
+        description: mode.description,
       })),
     },
   ];
@@ -118,7 +91,10 @@ interface SessionState {
   active: boolean;
   processStarted: boolean;
   mode: PermissionMode;
-  model: AmpModelId;
+  /** Stable Amp mode key. This is distinct from the mode's display label and model ID. */
+  model: string;
+  ampModes: readonly AmpModeOption[];
+  modeLocked: boolean;
   mcpConfig: AmpMcpConfig;
   cwd: string;
 }
@@ -131,15 +107,26 @@ interface InitializeResponseWithAgentInfo extends InitializeResponse {
   };
 }
 
+interface AmpAcpAgentOptions {
+  /** Lists selectable modes for the session cwd; defaults to the Amp CLI-backed catalog. */
+  modeCatalog?: AmpModeCatalog;
+}
+
 export class AmpAcpAgent implements Agent {
   private client: AgentSideConnection;
   private transport: AmpTransport;
   sessions = new Map<string, SessionState>();
   private clientCapabilities?: ClientCapabilities;
+  private modeCatalog: AmpModeCatalog;
 
-  constructor(client: AgentSideConnection, transport = createAmpTransport()) {
+  constructor(
+    client: AgentSideConnection,
+    transport = createAmpTransport(),
+    options: AmpAcpAgentOptions = {},
+  ) {
     this.client = client;
     this.transport = transport;
+    this.modeCatalog = options.modeCatalog ?? createAmpModeCatalog();
   }
 
   async initialize(request: InitializeRequest): Promise<InitializeResponseWithAgentInfo> {
@@ -177,6 +164,8 @@ export class AmpAcpAgent implements Agent {
     const sessionId = `S-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
     const mcpConfig = convertAcpMcpServersToAmpConfig(params.mcpServers);
+    const cwd = params.cwd || process.cwd();
+    const ampModes = await this.modeCatalog(cwd);
 
     const session: SessionState = {
       threadId: null,
@@ -187,8 +176,10 @@ export class AmpAcpAgent implements Agent {
       processStarted: false,
       mode: 'default',
       model: 'medium',
+      ampModes,
+      modeLocked: false,
       mcpConfig,
-      cwd: params.cwd || process.cwd(),
+      cwd,
     };
     this.sessions.set(sessionId, session);
 
@@ -231,6 +222,7 @@ export class AmpAcpAgent implements Agent {
     if (!s) throw new Error('Session not found');
     s.cancelled = false;
     s.active = true;
+    s.modeLocked = true;
     const steer = s.steerNextPrompt;
     s.steerNextPrompt = false;
 
@@ -376,10 +368,21 @@ If there are Cursor rules (in .cursor/rules/ or .cursorrules), Claude rules (CLA
         s.mode = params.value;
         break;
       case CONFIG_AMP_MODE:
-        if (!isAmpModelId(params.value)) {
-          throw new Error(`Unsupported Amp mode: ${params.value}`);
+        if (s.modeLocked) {
+          throw new Error('Amp mode is fixed after the first prompt. Start a new session to select a different mode.');
         }
-        s.model = params.value;
+        const modeValue = params.value.trim().toLowerCase();
+        const matches = s.ampModes.filter((mode) =>
+          mode.key.toLowerCase() === modeValue || mode.label.toLowerCase() === modeValue,
+        );
+        if (matches.length !== 1) {
+          throw new Error(
+            `Unsupported Amp mode: ${params.value}. Select a mode advertised for this session or start a new session after enabling its plugin.`,
+          );
+        }
+        // Preserve the stable key: labels are for display, and model IDs belong
+        // to the plugin definition rather than to this ACP adapter.
+        s.model = matches[0]!.key;
         break;
       default:
         throw new Error(`Unsupported config option: ${params.configId}`);

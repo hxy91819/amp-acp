@@ -1,8 +1,17 @@
 import { describe, it, beforeEach, expect } from 'bun:test';
 import { ClientSideConnection, AgentSideConnection, ndJsonStream } from '@agentclientprotocol/sdk';
+import { BUILTIN_AMP_MODES, type AmpModeCatalog } from './amp-modes.js';
 import { AmpAcpAgent } from './server.js';
 import { toAcpNotifications } from './to-acp.js';
 import type { SessionNotification } from '@agentclientprotocol/sdk';
+
+const syntheticPluginMode = {
+  key: 'synthetic-specialist',
+  label: 'Synthetic Specialist',
+  description: 'Uses a synthetic plugin agent for specialized work.',
+};
+
+const testModeCatalog: AmpModeCatalog = async () => [...BUILTIN_AMP_MODES, syntheticPluginMode];
 
 class TestClient {
   notifications: SessionNotification[] = [];
@@ -30,7 +39,7 @@ describe('ACP Protocol End-to-End', () => {
       ndJsonStream(clientToAgent.writable, agentToClient.readable),
     );
     new AgentSideConnection(
-      (client) => new AmpAcpAgent(client),
+      (client) => new AmpAcpAgent(client, undefined, { modeCatalog: testModeCatalog }),
       ndJsonStream(agentToClient.writable, clientToAgent.readable),
     );
   });
@@ -74,6 +83,7 @@ describe('ACP Protocol End-to-End', () => {
         { value: 'medium', name: 'Medium' },
         { value: 'high', name: 'High' },
         { value: 'ultra', name: 'Ultra' },
+        { value: 'synthetic-specialist', name: 'Synthetic Specialist' },
       ],
     });
   });
@@ -96,16 +106,34 @@ describe('ACP Protocol End-to-End', () => {
     });
   });
 
-  it('should reject legacy Amp modes', async () => {
+  it('selects a synthetic plugin mode by key and keeps its display label out of the execution value', async () => {
     const session = await agentConnection.newSession({
       cwd: '/tmp',
       mcpServers: [],
     });
 
+    const result = await agentConnection.setSessionConfigOption({
+      sessionId: session.sessionId,
+      configId: 'amp-mode',
+      value: 'Synthetic Specialist',
+    });
+
+    const ampMode = result.configOptions.find((option) => option.id === 'amp-mode');
+    expect(ampMode).toMatchObject({ currentValue: 'synthetic-specialist' });
+    expect(ampMode?.options).toContainEqual({
+      value: 'synthetic-specialist',
+      name: 'Synthetic Specialist',
+      description: 'Uses a synthetic plugin agent for specialized work.',
+    });
+  });
+
+  it('rejects a mode that was not advertised for this session', async () => {
+    const session = await agentConnection.newSession({ cwd: '/tmp', mcpServers: [] });
+
     await expect(agentConnection.setSessionConfigOption({
       sessionId: session.sessionId,
       configId: 'amp-mode',
-      value: 'rush',
+      value: 'not-discovered',
     })).rejects.toThrow('Internal error');
   });
 
