@@ -121,7 +121,11 @@ AMP_ACP_MODE_KEYS=low,medium,high,reviewer
 
 The adapter preserves this order and only exposes entries that its normal static discovery has verified for the session. It keeps its established `medium` default when that key remains visible, and otherwise defaults to the first configured visible key. A missing configured key is reported in the option diagnostic and remains hidden; if none of the configured keys is available, session creation fails clearly instead of falling back to another mode. The selected key is still passed to Amp unchanged, so Amp remains responsible for model routing and billing.
 
-This is an explicit configuration snapshot. Amp does not currently publish a non-executing CLI interface for reading the effective account Dial, so amp-acp does not attempt to infer or automatically synchronize it. Update `AMP_ACP_MODE_KEYS` when the desired Dial changes.
+#### Limitations
+
+This is an explicit configuration snapshot, not a live view of the account Dial. Amp does not currently publish a non-executing CLI or API interface for reading the effective Dial. Its available-mode and plugin commands expose a broader catalog, so amp-acp cannot use them to infer the account's selected modes or their order.
+
+Update `AMP_ACP_MODE_KEYS` and restart the adapter when the desired Dial changes. Existing sessions retain the mode chosen before their first prompt and must be recreated to use a different mode. Website scraping and private Amp endpoints are deliberately unsupported because they depend on browser authentication and unstable internal contracts. If Amp publishes a supported effective-Dial interface, this snapshot can be replaced with live discovery while retaining the existing availability checks and failure behavior.
 
 Native steering uses the CLI transport because Amp exposes the steer marker through `--stream-json-input`. Set `AMP_ACP_CANCEL_MODE=steer` for clients such as BB that represent steering as ACP cancellation followed immediately by another prompt. In that mode, the adapter keeps the input stream alive so the next prompt writes `{"steer":true}` to the active Amp process; closing the ACP connection still terminates it. Without the setting, cancellation terminates Amp as required by the standard ACP stop behavior. CLI mode and permission options must be selected before the first prompt; start a new ACP session to change them afterward. The SDK compatibility transport does not currently expose the steer marker.
 
