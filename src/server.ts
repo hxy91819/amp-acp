@@ -358,7 +358,10 @@ If there are Cursor rules (in .cursor/rules/ or .cursorrules), Claude rules (CLA
     const s = this.sessions.get(params.sessionId);
     if (!s) throw new Error('Session not found');
     if (this.transport.name === 'cli' && s.processStarted) {
-      throw new Error('Session configuration cannot change after the Amp process has started');
+      throw RequestError.invalidParams(
+        { configId: params.configId, value: params.value },
+        'Session configuration cannot change after the Amp process has started',
+      );
     }
     if (typeof params.value !== 'string') {
       throw RequestError.invalidParams(
