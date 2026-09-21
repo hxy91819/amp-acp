@@ -54,6 +54,13 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     })), 5);
     return;
   }
+  if (prompt === 'pause') {
+    console.log(JSON.stringify({
+      type: 'assistant',
+      parent_tool_use_id: null,
+      message: { content: [], stop_reason: 'pause_turn' },
+    }));
+  }
   console.log(JSON.stringify({
     type: 'assistant',
     parent_tool_use_id: 'nested-tool',
@@ -264,6 +271,27 @@ process.exit(3);
         result: expect.objectContaining({ prompt: 'hello from ACP', steer: false }),
       }),
     ]);
+  });
+
+  it('continues streaming after an intermediate pause_turn', async () => {
+    const transport = fixtureTransport();
+
+    const messages = await collect(transport.execute({
+      sessionId: 'session-pause',
+      prompt: 'pause',
+      options: { ...baseOptions, cwd: fixtureDir },
+      signal: new AbortController().signal,
+      steer: false,
+    }));
+
+    expect(messages).toContainEqual(expect.objectContaining({
+      type: 'assistant',
+      message: expect.objectContaining({ stop_reason: 'pause_turn' }),
+    }));
+    expect(messages.at(-1)).toMatchObject({
+      type: 'assistant',
+      result: { prompt: 'pause' },
+    });
   });
 
   it('includes CLI stderr when the process fails', async () => {

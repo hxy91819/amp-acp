@@ -263,11 +263,11 @@ function isPromptEcho(message: AmpStreamMessage, prompt: string): boolean {
 }
 
 function isPromptComplete(message: AmpStreamMessage): boolean {
+  const stopReason = message.message?.stop_reason;
   return message.type === 'result' || (
     message.type === 'assistant' &&
     message.parent_tool_use_id == null &&
-    typeof message.message?.stop_reason === 'string' &&
-    message.message.stop_reason !== 'tool_use'
+    (stopReason === 'end_turn' || stopReason === 'max_tokens')
   );
 }
 
