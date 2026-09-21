@@ -368,6 +368,7 @@ export class AmpAcpAgent implements Agent {
       threadId: mapping.threadId,
       controller: null,
       cancelled: false,
+      steerNextPrompt: false,
       active: false,
       mode: mapping.mode && isPermissionMode(mapping.mode) ? mapping.mode : 'default',
       model: mapping.model && isAmpModelId(mapping.model) ? mapping.model : 'medium',
