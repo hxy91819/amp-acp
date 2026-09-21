@@ -29,9 +29,11 @@ beforeAll(async () => {
   fixturePath = path.join(fixtureDir, 'fake-amp.mjs');
   await writeFile(fixturePath, `
 import { createInterface } from 'node:readline';
+import { existsSync, writeFileSync } from 'node:fs';
 process.on('SIGTERM', () => setTimeout(() => process.exit(0), 25));
 let initialized = false;
 let repeatPending = false;
+const repeatMarker = ${JSON.stringify(path.join(fixtureDir, 'repeat-seen'))};
 createInterface({ input: process.stdin }).on('line', (line) => {
   const input = JSON.parse(line);
   const prompt = input.message.content.map((part) => part.text).join('');
@@ -48,7 +50,8 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     }
     init();
   }
-  if (prompt === 'repeat' && !input.steer) {
+  if (prompt === 'repeat' && !input.steer && !existsSync(repeatMarker)) {
+    writeFileSync(repeatMarker, 'seen');
     repeatPending = true;
     setTimeout(() => {
       console.log(JSON.stringify({ type: 'user', message: { content: input.message.content } }));
@@ -439,8 +442,8 @@ process.exit(3);
       steer: false,
     })[Symbol.asyncIterator]();
 
-    const initial = await iterator.next();
-    expect(initial.value).toMatchObject({ type: 'system', subtype: 'init' });
+    const initial = (await iterator.next()).value as AmpStreamMessage & { process_id: number };
+    expect(initial).toMatchObject({ type: 'system', subtype: 'init' });
     controller.abort();
     await expect(iterator.next()).rejects.toThrow('Amp CLI prompt was cancelled');
 
@@ -458,8 +461,12 @@ process.exit(3);
     }));
     expect(steered.at(-1)).toMatchObject({
       type: 'assistant',
-      result: { prompt: 'repeat', steer: true },
+      result: { prompt: 'repeat', steer: false },
     });
+    const replacementInit = steered.find((message) => message.type === 'system') as
+      | (AmpStreamMessage & { process_id: number })
+      | undefined;
+    expect(replacementInit?.process_id).not.toBe(initial.process_id);
   });
 
   it('terminates the CLI process on standard ACP cancellation', async () => {

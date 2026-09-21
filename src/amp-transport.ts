@@ -355,6 +355,13 @@ export function createCliTransport(
       signal.throwIfAborted();
 
       let session = sessions.get(sessionId);
+      let inputSteer = steer;
+      if (session?.pendingPromptEchoes.some((pending) => pending.prompt === prompt)) {
+        await terminateSession(sessionId);
+        signal.throwIfAborted();
+        session = undefined;
+        inputSteer = false;
+      }
       session ??= startSession(sessionId, options);
       const promptSequence = ++session.nextPromptSequence;
 
@@ -362,7 +369,7 @@ export function createCliTransport(
         session.pendingPromptEchoes.push({ prompt, sequence: promptSequence });
         try {
           await new Promise<void>((resolve, reject) => {
-            session.child.stdin.write(formatPromptInput(prompt, steer), (error) => error ? reject(error) : resolve());
+            session.child.stdin.write(formatPromptInput(prompt, inputSteer), (error) => error ? reject(error) : resolve());
           });
         } catch (error) {
           const index = session.pendingPromptEchoes.findIndex((pending) => pending.sequence === promptSequence);
