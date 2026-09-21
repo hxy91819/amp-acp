@@ -40,7 +40,12 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   }
   if (!initialized) {
     initialized = true;
-    console.log(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'T-cli-test', process_id: process.pid }));
+    const init = () => console.log(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'T-cli-test', process_id: process.pid }));
+    if (prompt === 'early wait') {
+      setTimeout(init, 5);
+      return;
+    }
+    init();
   }
   console.log(JSON.stringify({ type: 'user', message: { content: input.message.content } }));
   if (prompt === 'malformed') {
@@ -342,6 +347,41 @@ process.exit(3);
         steer: true,
         processId: initial.process_id,
       },
+    });
+  });
+
+  it('delivers delayed initialization after steering an early cancellation', async () => {
+    const controller = new AbortController();
+    const transport = fixtureTransport();
+    const iterator = transport.execute({
+      sessionId: 'session-early-steer',
+      prompt: 'early wait',
+      options: { ...baseOptions, cwd: fixtureDir },
+      signal: controller.signal,
+      steer: false,
+    })[Symbol.asyncIterator]();
+
+    const pending = iterator.next();
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    controller.abort();
+    await expect(pending).rejects.toThrow('Amp CLI prompt was cancelled');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const steered = await collect(transport.execute({
+      sessionId: 'session-early-steer',
+      prompt: 'change direction',
+      options: { ...baseOptions, cwd: fixtureDir },
+      signal: new AbortController().signal,
+      steer: true,
+    }));
+    expect(steered).toContainEqual(expect.objectContaining({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'T-cli-test',
+    }));
+    expect(steered.at(-1)).toMatchObject({
+      type: 'assistant',
+      result: { prompt: 'change direction', steer: true },
     });
   });
 
