@@ -150,7 +150,7 @@ describe('AmpAcpAgent session/load', () => {
     expect(lastCall.options.dangerouslyAllowAll).toBeUndefined();
   });
 
-  it('falls back to an advertised mode when the persisted mode is unavailable', async () => {
+  it('rejects loading rather than changing the persisted Amp mode', async () => {
     const first = createAgent();
     await first.initialize({ protocolVersion: 1, clientCapabilities: {} });
     const session = await first.newSession({ cwd: '/tmp', mcpServers: [] });
@@ -166,19 +166,11 @@ describe('AmpAcpAgent session/load', () => {
       replayRetry: { attempts: 1, delayMs: 0 },
     });
     await second.initialize({ protocolVersion: 1, clientCapabilities: {} });
-    const loaded = await second.loadSession({
+    await expect(second.loadSession({
       sessionId: session.sessionId,
       cwd: '/tmp',
       mcpServers: [],
-    });
-
-    const byId = new Map(loaded.configOptions?.map((option) => [option.id, option]));
-    expect(byId.get('amp-mode')?.currentValue).toBe('high');
-    await second.prompt({
-      sessionId: session.sessionId,
-      prompt: [{ type: 'text', text: 'continue' }],
-    });
-    expect(capturedCalls.at(-1)!.options.mode).toBe('high');
+    })).rejects.toThrow('persisted Amp mode medium is not available');
   });
 
   it('rejects loading when no configured Amp mode is available', async () => {

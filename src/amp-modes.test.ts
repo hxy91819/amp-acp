@@ -108,6 +108,35 @@ describe('createAmpModeCatalog', () => {
     ]);
   });
 
+  it('keeps distinct identities for explicitly configured plugin roots', async () => {
+    const firstPlugin = path.join(fixtureDir, 'configured-plugins', 'first-plugin');
+    const secondPlugin = path.join(fixtureDir, 'configured-plugins', 'second-plugin');
+    await mkdir(firstPlugin, { recursive: true });
+    await mkdir(secondPlugin, { recursive: true });
+    await writeFile(
+      path.join(firstPlugin, 'index.ts'),
+      '// @amp-agent-mode {"key":"first-mode","label":"First Mode"}\n',
+    );
+    await writeFile(
+      path.join(secondPlugin, 'index.ts'),
+      '// @amp-agent-mode {"key":"second-mode","label":"Second Mode"}\n',
+    );
+    const catalog = createAmpModeCatalog({
+      workspacePluginDirectories: [firstPlugin, secondPlugin],
+      systemPluginDirectory: path.join(fixtureDir, 'no-system-plugin'),
+      globalPluginCacheDirectory: path.join(fixtureDir, 'no-global-plugin'),
+    });
+
+    expect((await catalog(projectWithoutPlugin)).modes.map((mode) => mode.key)).toEqual([
+      'low',
+      'medium',
+      'high',
+      'ultra',
+      'first-mode',
+      'second-mode',
+    ]);
+  });
+
   it('uses only the newest explicitly configured cached workspace plugin revision', async () => {
     const globalPluginCacheDirectory = path.join(fixtureDir, 'global-plugins');
     const stalePlugin = path.join(globalPluginCacheDirectory, 'ampcode.com', 'workspace', 'example@abcdef12');

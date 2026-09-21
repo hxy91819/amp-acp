@@ -134,7 +134,7 @@ function pluginIdentityFromDirectory(directory: string): string {
   return path.basename(directory).toLowerCase();
 }
 
-async function findPluginEntries(target: string): Promise<PluginEntry[]> {
+async function findPluginEntries(target: string, directoryIsPluginRoot = false): Promise<PluginEntry[]> {
   let targetStats: Awaited<ReturnType<typeof stat>>;
   try {
     targetStats = await stat(target);
@@ -146,6 +146,19 @@ async function findPluginEntries(target: string): Promise<PluginEntry[]> {
     return isPluginSourceFile(target) ? [{ identity: pluginIdentityFromFile(target), entryFile: target }] : [];
   }
   if (!targetStats.isDirectory()) return [];
+
+  if (directoryIsPluginRoot) {
+    for (const entryName of ['index.ts', 'index.js']) {
+      const entryFile = path.join(target, entryName);
+      try {
+        if ((await stat(entryFile)).isFile()) {
+          return [{ identity: pluginIdentityFromDirectory(target), entryFile }];
+        }
+      } catch (error) {
+        if (!isNotFoundError(error)) throw error;
+      }
+    }
+  }
 
   const plugins: PluginEntry[] = [];
   const entries = await readdir(target, { withFileTypes: true });
@@ -391,11 +404,11 @@ async function selectEffectivePluginEntries(cwd: string, options: AmpModeCatalog
   for (const directory of [
     ...configuredDirectories('AMP_ACP_WORKSPACE_PLUGIN_PATHS'),
     ...(options.workspacePluginDirectories ?? []),
-  ]) addEntries(await findPluginEntries(directory));
+  ]) addEntries(await findPluginEntries(directory, true));
   for (const directory of [
     ...configuredDirectories('AMP_ACP_PERSONAL_PLUGIN_PATHS'),
     ...(options.personalPluginDirectories ?? []),
-  ]) addEntries(await findPluginEntries(directory));
+  ]) addEntries(await findPluginEntries(directory, true));
   addEntries(await findPluginEntries(systemPluginDirectory));
   addEntries(await findPluginEntries(path.join(cwd, '.amp', 'plugins')));
   return [...selected.values()];
