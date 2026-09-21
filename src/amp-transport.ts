@@ -322,10 +322,12 @@ export function createCliTransport(
           if (!line.trim()) continue;
           try {
             const message = JSON.parse(line) as AmpStreamMessage;
-            const pendingEcho = session.pendingPromptEchoes[0];
-            const promptSequence = pendingEcho && isPromptEcho(message, pendingEcho.prompt)
-              ? session.pendingPromptEchoes.shift()?.sequence
-              : undefined;
+            const pendingIndex = session.pendingPromptEchoes.findIndex(
+              (pending) => isPromptEcho(message, pending.prompt),
+            );
+            const promptSequence = pendingIndex === -1
+              ? undefined
+              : session.pendingPromptEchoes.splice(0, pendingIndex + 1).at(-1)?.sequence;
             session.queue.push({ message, promptSequence });
           } catch {
             throw new Error(`Failed to parse JSON response, raw line: ${line}`);
@@ -380,8 +382,6 @@ export function createCliTransport(
         }
       } catch (error) {
         if (signal.aborted) {
-          const index = session.pendingPromptEchoes.findIndex((pending) => pending.sequence === promptSequence);
-          if (index !== -1) session.pendingPromptEchoes.splice(index, 1);
           if (!preserveCancelledProcess) await terminateSession(sessionId);
           throw abortedError();
         }

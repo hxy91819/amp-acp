@@ -31,6 +31,7 @@ beforeAll(async () => {
 import { createInterface } from 'node:readline';
 process.on('SIGTERM', () => setTimeout(() => process.exit(0), 25));
 let initialized = false;
+let repeatPending = false;
 createInterface({ input: process.stdin }).on('line', (line) => {
   const input = JSON.parse(line);
   const prompt = input.message.content.map((part) => part.text).join('');
@@ -46,6 +47,30 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       return;
     }
     init();
+  }
+  if (prompt === 'repeat' && !input.steer) {
+    repeatPending = true;
+    setTimeout(() => {
+      console.log(JSON.stringify({ type: 'user', message: { content: input.message.content } }));
+      console.log(JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'stale repeated output' }], stop_reason: 'end_turn' },
+      }));
+      repeatPending = false;
+    }, 30);
+    return;
+  }
+  if (prompt === 'repeat' && input.steer && repeatPending) {
+    setTimeout(() => {
+      console.log(JSON.stringify({ type: 'user', message: { content: input.message.content } }));
+      console.log(JSON.stringify({
+        type: 'assistant',
+        parent_tool_use_id: null,
+        message: { content: [{ type: 'text', text: prompt }], stop_reason: 'end_turn' },
+        result: { prompt, steer: input.steer, processId: process.pid },
+      }));
+    }, 40);
+    return;
   }
   console.log(JSON.stringify({ type: 'user', message: { content: input.message.content } }));
   if (prompt === 'malformed') {
@@ -400,6 +425,40 @@ process.exit(3);
     expect(steered.at(-1)).toMatchObject({
       type: 'assistant',
       result: { prompt: 'change direction', steer: true },
+    });
+  });
+
+  it('does not attribute a cancelled prompt response to a same-text replacement', async () => {
+    const controller = new AbortController();
+    const transport = fixtureTransport();
+    const iterator = transport.execute({
+      sessionId: 'session-repeat-steer',
+      prompt: 'repeat',
+      options: { ...baseOptions, cwd: fixtureDir },
+      signal: controller.signal,
+      steer: false,
+    })[Symbol.asyncIterator]();
+
+    const initial = await iterator.next();
+    expect(initial.value).toMatchObject({ type: 'system', subtype: 'init' });
+    controller.abort();
+    await expect(iterator.next()).rejects.toThrow('Amp CLI prompt was cancelled');
+
+    const steered = await collect(transport.execute({
+      sessionId: 'session-repeat-steer',
+      prompt: 'repeat',
+      options: { ...baseOptions, cwd: fixtureDir },
+      signal: new AbortController().signal,
+      steer: true,
+    }));
+    expect(steered).not.toContainEqual(expect.objectContaining({
+      message: expect.objectContaining({
+        content: [expect.objectContaining({ text: 'stale repeated output' })],
+      }),
+    }));
+    expect(steered.at(-1)).toMatchObject({
+      type: 'assistant',
+      result: { prompt: 'repeat', steer: true },
     });
   });
 
