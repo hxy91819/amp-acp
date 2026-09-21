@@ -52,6 +52,7 @@ export interface AmpExecutionRequest {
 
 export interface AmpTransport {
   readonly name: 'cli' | 'sdk';
+  readonly supportsSteering?: boolean;
   execute(request: AmpExecutionRequest): AsyncIterable<AmpStreamMessage>;
   closeSession?(sessionId: string): void;
   closeAll?(): void;
@@ -349,6 +350,7 @@ export function createCliTransport(
 
   const transport: AmpTransport = {
     name: 'cli',
+    supportsSteering: preserveCancelledProcess,
     async *execute({ sessionId, prompt, options, signal, steer }) {
       signal.throwIfAborted();
 

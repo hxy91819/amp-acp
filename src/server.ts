@@ -560,7 +560,7 @@ If there are Cursor rules (in .cursor/rules/ or .cursorrules), Claude rules (CLA
     if (!s) return;
     if (s.active && s.controller) {
       s.cancelled = true;
-      s.steerNextPrompt = s.executor === 'local' && s.processStarted;
+      s.steerNextPrompt = s.executor === 'local' && s.processStarted && this.transport.supportsSteering === true;
       s.controller.abort();
     }
   }
