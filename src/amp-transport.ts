@@ -278,11 +278,18 @@ export function createCliTransport(
 ): AmpTransport {
   const sessions = new Map<string, CliSession>();
 
-  const closeSession = (sessionId: string): void => {
+  const terminateSession = (sessionId: string): Promise<void> => {
     const session = sessions.get(sessionId);
-    if (!session) return;
+    if (!session) return Promise.resolve();
     sessions.delete(sessionId);
+    if (session.child.exitCode !== null || session.child.signalCode !== null) return Promise.resolve();
+    const closed = new Promise<void>((resolve) => session.child.once('close', () => resolve()));
     session.child.kill(process.platform === 'win32' ? 'SIGKILL' : 'SIGTERM');
+    return closed;
+  };
+
+  const closeSession = (sessionId: string): void => {
+    void terminateSession(sessionId);
   };
 
   const startSession = (sessionId: string, options: AmpExecutionOptions): CliSession => {
@@ -372,7 +379,7 @@ export function createCliTransport(
         }
       } catch (error) {
         if (signal.aborted) {
-          if (!preserveCancelledProcess) closeSession(sessionId);
+          if (!preserveCancelledProcess) await terminateSession(sessionId);
           throw abortedError();
         }
         throw error;
