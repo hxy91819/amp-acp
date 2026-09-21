@@ -106,7 +106,7 @@ describe('AmpAcpAgent prompt() continue option', () => {
     const transport: AmpTransport = {
       name: 'cli',
       async *execute() {
-        yield { type: 'system', subtype: 'init', session_id: 'T-started-thread' };
+        yield { type: 'system', subtype: 'init', session_id: threadId };
         yield { type: 'result', subtype: 'success', is_error: false };
       },
     };
@@ -226,7 +226,7 @@ describe('AmpAcpAgent prompt() continue option', () => {
     });
   });
 
-  it('preserves thread and local-only options when switching between local and Orb', async () => {
+  it('rejects switching execution environment after the local CLI process starts', async () => {
     process.env.AMP_ACP_ORB_PROJECT = 'acme/widgets';
     const localCalls: { options: Record<string, unknown> }[] = [];
     const localTransport = {
@@ -250,40 +250,19 @@ describe('AmpAcpAgent prompt() continue option', () => {
     });
 
     await agent.prompt({ sessionId: session.sessionId, prompt: [{ type: 'text', text: 'local' }] });
-    await agent.setSessionConfigOption({
+    await expect(agent.setSessionConfigOption({
       sessionId: session.sessionId,
       configId: 'execution-environment',
       value: 'orb',
-    });
-    await agent.prompt({ sessionId: session.sessionId, prompt: [{ type: 'text', text: 'orb' }] });
-    await agent.setSessionConfigOption({
-      sessionId: session.sessionId,
-      configId: 'execution-environment',
-      value: 'local',
-    });
-    await agent.prompt({ sessionId: session.sessionId, prompt: [{ type: 'text', text: 'local again' }] });
+    })).rejects.toThrow('Session configuration cannot change after the Amp process has started');
 
-    expect(localCalls).toHaveLength(2);
+    expect(localCalls).toHaveLength(1);
     expect(localCalls[0]!.options).toMatchObject({
       executor: 'local',
       dangerouslyAllowAll: true,
       mcpConfig: { local: { command: 'node', args: ['server.js'] } },
     });
-    expect(capturedCalls).toHaveLength(1);
-    expect(capturedCalls[0]!.options).toMatchObject({
-      executor: 'orb',
-      project: 'acme/widgets',
-      continue: threadId,
-    });
-    expect(capturedCalls[0]!.options.dangerouslyAllowAll).toBeUndefined();
-    expect(capturedCalls[0]!.options.mcpConfig).toBeUndefined();
-    expect(localCalls[1]!.options).toMatchObject({
-      executor: 'local',
-      continue: threadId,
-      dangerouslyAllowAll: true,
-      mcpConfig: { local: { command: 'node', args: ['server.js'] } },
-    });
-    expect(localCalls[1]!.options.project).toBeUndefined();
+    expect(capturedCalls).toHaveLength(0);
   });
 
   it('sets continue=true on first prompt when AMP_ACP_CONTINUE_LATEST is set', async () => {
