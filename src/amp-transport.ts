@@ -349,11 +349,10 @@ export function createCliTransport(
       signal.throwIfAborted();
 
       let session = sessions.get(sessionId);
-      const startedSession = session === undefined;
       session ??= startSession(sessionId, options);
+      const promptSequence = ++session.nextPromptSequence;
 
       try {
-        const promptSequence = ++session.nextPromptSequence;
         session.pendingPromptEchoes.push({ prompt, sequence: promptSequence });
         try {
           await new Promise<void>((resolve, reject) => {
@@ -371,7 +370,7 @@ export function createCliTransport(
           if (queued.promptSequence === promptSequence) {
             promptEchoed = true;
           } else if (!promptEchoed) {
-            if (message.type === 'system' && (startedSession || !steer)) yield message;
+            if (message.type === 'system') yield message;
             continue;
           }
           yield message;
@@ -379,6 +378,8 @@ export function createCliTransport(
         }
       } catch (error) {
         if (signal.aborted) {
+          const index = session.pendingPromptEchoes.findIndex((pending) => pending.sequence === promptSequence);
+          if (index !== -1) session.pendingPromptEchoes.splice(index, 1);
           if (!preserveCancelledProcess) await terminateSession(sessionId);
           throw abortedError();
         }
