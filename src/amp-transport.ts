@@ -267,7 +267,9 @@ function isPromptComplete(message: AmpStreamMessage): boolean {
   return message.type === 'result' || (
     message.type === 'assistant' &&
     message.parent_tool_use_id == null &&
-    (stopReason === 'end_turn' || stopReason === 'max_tokens')
+    typeof stopReason === 'string' &&
+    stopReason !== 'tool_use' &&
+    stopReason !== 'pause_turn'
   );
 }
 
