@@ -83,6 +83,7 @@ function spawnAdapter() {
     env: {
       ...globalThis.process.env,
       AMP_ACP_TRANSPORT: 'cli',
+      AMP_ACP_MODE_KEYS: 'low,medium,high,ultra',
       AMP_CLI_PATH: fakeAmpPath,
       AMP_ACP_STATE_DIR: stateDir,
       AMP_FAKE_LOG: fakeLogPath,

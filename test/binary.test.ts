@@ -64,6 +64,10 @@ function sendAndWait(
 describe('Binary integration tests', () => {
   beforeAll(() => {
     proc = spawn(BINARY_PATH, [], {
+      env: {
+        ...process.env,
+        AMP_ACP_MODE_KEYS: 'low,medium,high,ultra',
+      },
       stdio: ['pipe', 'pipe', 'ignore'],
     });
 
