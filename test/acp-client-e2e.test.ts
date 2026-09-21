@@ -88,6 +88,7 @@ describe('ACP client to compiled amp-acp binary', () => {
         ...globalThis.process.env,
         AMP_ACP_TRANSPORT: 'cli',
         AMP_ACP_CANCEL_MODE: 'steer',
+        AMP_ACP_MODE_KEYS: 'low,medium,high,ultra,synthetic-specialist',
         AMP_CLI_PATH: fakeAmpPath,
         AMP_API_KEY: 'test-key',
       },
