@@ -155,6 +155,7 @@ describe('AmpAcpAgent prompt() continue option', () => {
     const requests: AmpExecutionRequest[] = [];
     const transport: AmpTransport = {
       name: 'cli',
+      supportsSteering: true,
       async *execute(request) {
         requests.push(request);
         if (requests.length === 1) {
@@ -187,6 +188,39 @@ describe('AmpAcpAgent prompt() continue option', () => {
     ]);
   });
 
+  it('does not steer after cancellation when the transport terminates the process', async () => {
+    const requests: AmpExecutionRequest[] = [];
+    const transport: AmpTransport = {
+      name: 'cli',
+      async *execute(request) {
+        requests.push(request);
+        if (requests.length === 1) {
+          await new Promise<void>((resolve) => {
+            request.signal.addEventListener('abort', () => resolve(), { once: true });
+          });
+          throw new Error('Amp CLI prompt was cancelled');
+        }
+        yield { type: 'result', subtype: 'success', is_error: false };
+      },
+    };
+    agent = new AmpAcpAgent(mockClient, transport);
+    const session = await agent.newSession({ cwd: '/tmp', mcpServers: [] });
+    const firstPrompt = agent.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: 'text', text: 'first' }],
+    });
+    while (!agent.sessions.get(session.sessionId)?.active) await Promise.resolve();
+    await agent.cancel({ sessionId: session.sessionId });
+    expect((await firstPrompt).stopReason).toBe('cancelled');
+
+    await agent.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: 'text', text: 'try again' }],
+    });
+
+    expect(requests.map(({ steer }) => steer)).toEqual([false, false]);
+  });
+
   it('keeps an immediate steering replacement cancellable while the old prompt unwinds', async () => {
     let releaseCancelledPrompt!: () => void;
     const cancelledPromptReleased = new Promise<void>((resolve) => {
@@ -195,6 +229,7 @@ describe('AmpAcpAgent prompt() continue option', () => {
     const requests: AmpExecutionRequest[] = [];
     const transport: AmpTransport = {
       name: 'cli',
+      supportsSteering: true,
       async *execute(request) {
         requests.push(request);
         await new Promise<void>((resolve) => {
@@ -372,6 +407,7 @@ describe('AmpAcpAgent prompt() continue option', () => {
     const requests: AmpExecutionRequest[] = [];
     const transport: AmpTransport = {
       name: 'cli',
+      supportsSteering: true,
       async *execute(request) {
         requests.push(request);
         yield { type: 'system', subtype: 'init', session_id: threadId };
