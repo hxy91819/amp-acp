@@ -151,6 +151,42 @@ describe('AmpAcpAgent prompt() continue option', () => {
     })).rejects.toThrow('Session configuration cannot change after the Amp process has started');
   });
 
+  it('steers after cancellation before Amp reports its thread ID', async () => {
+    const requests: AmpExecutionRequest[] = [];
+    const transport: AmpTransport = {
+      name: 'cli',
+      async *execute(request) {
+        requests.push(request);
+        if (requests.length === 1) {
+          await new Promise<void>((resolve) => {
+            request.signal.addEventListener('abort', () => resolve(), { once: true });
+          });
+          throw new Error('Amp CLI prompt was cancelled');
+        }
+        yield { type: 'result', subtype: 'success', is_error: false };
+      },
+    };
+    agent = new AmpAcpAgent(mockClient, transport);
+    const session = await agent.newSession({ cwd: '/tmp', mcpServers: [] });
+    const firstPrompt = agent.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: 'text', text: 'first' }],
+    });
+    while (!agent.sessions.get(session.sessionId)?.active) await Promise.resolve();
+    await agent.cancel({ sessionId: session.sessionId });
+    expect((await firstPrompt).stopReason).toBe('cancelled');
+
+    await agent.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: 'text', text: 'change direction' }],
+    });
+
+    expect(requests.map(({ options, steer }) => ({ continue: options.continue, steer }))).toEqual([
+      { continue: undefined, steer: false },
+      { continue: undefined, steer: true },
+    ]);
+  });
+
   it('passes selected permission config to the SDK', async () => {
     const session = await agent.newSession({ cwd: '/tmp', mcpServers: [] });
     await agent.setSessionConfigOption({ sessionId: session.sessionId, configId: 'permission', value: 'bypass' });
