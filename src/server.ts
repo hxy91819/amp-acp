@@ -369,9 +369,16 @@ export class AmpAcpAgent implements Agent {
   ): Promise<SessionState> {
     const cwd = params.cwd || mapping.cwd || process.cwd();
     const modeCatalog = await this.modeCatalog(cwd);
+    if (modeCatalog.modes.length === 0) {
+      const detail = modeCatalog.diagnostic ? ` ${modeCatalog.diagnostic}` : '';
+      throw RequestError.invalidParams(
+        { configId: CONFIG_AMP_MODE },
+        `No configured Amp modes were discovered for this session.${detail}`,
+      );
+    }
     const ampModeKey = mapping.model && modeCatalog.modes.some((mode) => mode.key === mapping.model)
       ? mapping.model
-      : 'medium';
+      : (modeCatalog.modes.find((mode) => mode.key === 'medium') ?? modeCatalog.modes[0]!).key;
     return {
       threadId: mapping.threadId,
       controller: null,
