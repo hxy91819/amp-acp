@@ -16,9 +16,10 @@ mock.module('@ampcode/sdk', () => ({
   },
 }));
 
-const [{ AmpAcpAgent }, { createAmpTransport }] = await Promise.all([
+const [{ AmpAcpAgent }, { createAmpTransport }, { BUILTIN_AMP_MODES }] = await Promise.all([
   import('./server.js'),
   import('./amp-transport.js'),
+  import('./amp-modes.js'),
 ]);
 
 const mockClient = {
@@ -36,6 +37,7 @@ const noHistory = async () => [];
 function createAgent(): InstanceType<typeof AmpAcpAgent> {
   return new AmpAcpAgent(mockClient, createAmpTransport('sdk'), {
     exportThread: noHistory,
+    modeCatalog: async () => ({ modes: BUILTIN_AMP_MODES }),
     replayRetry: { attempts: 1, delayMs: 0 },
   });
 }
@@ -104,10 +106,6 @@ describe('AmpAcpAgent session/load', () => {
     const first = createAgent();
     await first.initialize({ protocolVersion: 1, clientCapabilities: {} });
     const session = await first.newSession({ cwd: '/tmp', mcpServers: [] });
-    await first.prompt({
-      sessionId: session.sessionId,
-      prompt: [{ type: 'text', text: 'hello' }],
-    });
     await first.setSessionConfigOption({
       sessionId: session.sessionId,
       configId: 'amp-mode',
@@ -122,6 +120,10 @@ describe('AmpAcpAgent session/load', () => {
       sessionId: session.sessionId,
       configId: 'execution-environment',
       value: 'orb',
+    });
+    await first.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: 'text', text: 'hello' }],
     });
 
     const second = createAgent();
@@ -224,14 +226,14 @@ describe('AmpAcpAgent session/load', () => {
     const first = createAgent();
     await first.initialize({ protocolVersion: 1, clientCapabilities: {} });
     const session = await first.newSession({ cwd: '/tmp', mcpServers: [] });
-    await first.prompt({
-      sessionId: session.sessionId,
-      prompt: [{ type: 'text', text: 'hello' }],
-    });
     await first.setSessionConfigOption({
       sessionId: session.sessionId,
       configId: 'amp-mode',
       value: 'ultra',
+    });
+    await first.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: 'text', text: 'hello' }],
     });
 
     const second = createAgent();
