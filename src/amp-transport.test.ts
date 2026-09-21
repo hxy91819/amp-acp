@@ -29,6 +29,7 @@ beforeAll(async () => {
   fixturePath = path.join(fixtureDir, 'fake-amp.mjs');
   await writeFile(fixturePath, `
 import { createInterface } from 'node:readline';
+process.on('SIGTERM', () => setTimeout(() => process.exit(0), 25));
 let initialized = false;
 createInterface({ input: process.stdin }).on('line', (line) => {
   const input = JSON.parse(line);
@@ -330,6 +331,7 @@ process.exit(3);
     const initial = (await iterator.next()).value as AmpStreamMessage & { process_id: number };
     controller.abort();
     await expect(iterator.next()).rejects.toThrow('Amp CLI prompt was cancelled');
+    expect(() => process.kill(initial.process_id, 0)).toThrow();
 
     const restarted = await collect(transport.execute({
       sessionId: 'session-cancel',
