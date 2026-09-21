@@ -79,7 +79,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     parent_tool_use_id: null,
     message: {
       content: [{ type: 'text', text: prompt }],
-      stop_reason: 'end_turn',
+      stop_reason: prompt === 'stop sequence' ? 'stop_sequence' : 'end_turn',
     },
     result: { prompt, steer: input.steer, processId: process.pid },
   }));
@@ -296,6 +296,24 @@ process.exit(3);
     expect(messages.at(-1)).toMatchObject({
       type: 'assistant',
       result: { prompt: 'pause' },
+    });
+  });
+
+  it('finishes on other terminal stop reasons', async () => {
+    const transport = fixtureTransport();
+
+    const messages = await collect(transport.execute({
+      sessionId: 'session-stop-sequence',
+      prompt: 'stop sequence',
+      options: { ...baseOptions, cwd: fixtureDir },
+      signal: new AbortController().signal,
+      steer: false,
+    }));
+
+    expect(messages.at(-1)).toMatchObject({
+      type: 'assistant',
+      message: { stop_reason: 'stop_sequence' },
+      result: { prompt: 'stop sequence' },
     });
   });
 
