@@ -535,9 +535,9 @@ If there are Cursor rules (in .cursor/rules/ or .cursorrules), Claude rules (CLA
         }
       }
 
-      return { stopReason: s.cancelled ? 'cancelled' : 'end_turn' };
+      return { stopReason: controller.signal.aborted ? 'cancelled' : 'end_turn' };
     } catch (err) {
-      if (s.cancelled || (err instanceof Error && (err.name === 'AbortError' || err.message.includes('aborted')))) {
+      if (controller.signal.aborted || (err instanceof Error && (err.name === 'AbortError' || err.message.includes('aborted')))) {
         return { stopReason: 'cancelled' };
       }
       if (err instanceof Error && isAuthError(err.message)) {
@@ -547,9 +547,11 @@ If there are Cursor rules (in .cursor/rules/ or .cursorrules), Claude rules (CLA
       console.error('[amp] Execution error:', err);
       throw err;
     } finally {
-      s.active = false;
-      s.cancelled = false;
-      s.controller = null;
+      if (s.controller === controller) {
+        s.active = false;
+        s.cancelled = false;
+        s.controller = null;
+      }
     }
   }
 
