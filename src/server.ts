@@ -376,9 +376,14 @@ export class AmpAcpAgent implements Agent {
         `No configured Amp modes were discovered for this session.${detail}`,
       );
     }
-    const ampModeKey = mapping.model && modeCatalog.modes.some((mode) => mode.key === mapping.model)
-      ? mapping.model
-      : (modeCatalog.modes.find((mode) => mode.key === 'medium') ?? modeCatalog.modes[0]!).key;
+    if (mapping.model && !modeCatalog.modes.some((mode) => mode.key === mapping.model)) {
+      throw RequestError.invalidParams(
+        { configId: CONFIG_AMP_MODE, value: mapping.model },
+        `The persisted Amp mode ${mapping.model} is not available for this session.`,
+      );
+    }
+    const ampModeKey = mapping.model
+      ?? (modeCatalog.modes.find((mode) => mode.key === 'medium') ?? modeCatalog.modes[0]!).key;
     return {
       threadId: mapping.threadId,
       controller: null,
