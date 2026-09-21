@@ -36,8 +36,10 @@ describe('createAmpModeCatalog', () => {
   let projectWithPlugin = '';
   let projectWithoutPlugin = '';
   let sideEffectMarker = '';
+  const originalModeKeys = process.env.AMP_ACP_MODE_KEYS;
 
   beforeAll(async () => {
+    delete process.env.AMP_ACP_MODE_KEYS;
     fixtureDir = await mkdtemp(path.join(os.tmpdir(), 'amp-mode-catalog-test-'));
     projectWithPlugin = path.join(fixtureDir, 'with-plugin');
     projectWithoutPlugin = path.join(fixtureDir, 'without-plugin');
@@ -52,6 +54,11 @@ describe('createAmpModeCatalog', () => {
 
   afterAll(async () => {
     if (fixtureDir) await rm(fixtureDir, { recursive: true, force: true });
+    if (originalModeKeys === undefined) {
+      delete process.env.AMP_ACP_MODE_KEYS;
+    } else {
+      process.env.AMP_ACP_MODE_KEYS = originalModeKeys;
+    }
   });
 
   it('discovers static plugin metadata per working directory and preserves the built-in modes', async () => {
