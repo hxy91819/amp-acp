@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
@@ -10,6 +11,44 @@ export interface RemoteDialOptions {
   command?: string;
   commandArgs?: readonly string[];
   timeoutMs?: number;
+  cacheDirectory?: string;
+  /** Defaults to AMP_ACP_DIAL_CACHE_TTL_SECONDS, or 24 hours. Zero forces refresh. */
+  cacheTtlMs?: number;
+  now?: () => number;
+}
+
+const pendingReads = new Map<string, Promise<string[]>>();
+
+function cachePath(directory: string, serviceURL: URL, token: string): string {
+  const identity = createHash('sha256').update(JSON.stringify([serviceURL.href, token])).digest('hex');
+  return path.join(directory, `${identity}.json`);
+}
+
+async function readCachedDial(file: string, ttlMs: number, now: number): Promise<string[] | undefined> {
+  if (ttlMs === 0) return undefined;
+  try {
+    const cached: unknown = JSON.parse(await readFile(file, 'utf8'));
+    const fetchedAt = field(cached, 'fetchedAt');
+    if (field(cached, 'version') !== 1 || typeof fetchedAt !== 'number'
+      || !Number.isFinite(fetchedAt) || now < fetchedAt || now - fetchedAt >= ttlMs) return undefined;
+    return parseDial({ result: { dialModes: field(cached, 'dialModes') } });
+  } catch {
+    // Missing, corrupt, or inaccessible cache files are ordinary cache misses.
+    return undefined;
+  }
+}
+
+async function writeCachedDial(file: string, dialModes: string[], fetchedAt: number): Promise<void> {
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  try {
+    await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+    await writeFile(temporary, JSON.stringify({ version: 1, fetchedAt, dialModes }), { flag: 'wx', mode: 0o600 });
+    await rename(temporary, file);
+  } catch {
+    // Persistence is best effort: a read-only cache must not prevent a valid session.
+  } finally {
+    await rm(temporary, { force: true }).catch(() => {});
+  }
 }
 
 function field(value: unknown, key: string): unknown {
@@ -38,8 +77,15 @@ export function createRemoteDialReader(options: RemoteDialOptions = {}): (cwd: s
     ?? path.join(process.env.XDG_DATA_HOME ?? path.join(homedir(), '.local', 'share'), 'amp');
   const command = options.command ?? process.env.AMP_CLI_PATH ?? 'amp';
   const commandArgs = options.commandArgs ?? [];
+  const cacheDirectory = options.cacheDirectory
+    ?? path.join(process.env.XDG_CACHE_HOME ?? path.join(homedir(), '.cache'), 'amp-acp', 'remote-dial');
+  const now = options.now ?? Date.now;
 
   return async (cwd) => {
+    const ttlMs = options.cacheTtlMs ?? Number(process.env.AMP_ACP_DIAL_CACHE_TTL_SECONDS ?? '86400') * 1000;
+    if (!Number.isFinite(ttlMs) || ttlMs < 0 || ttlMs > Number.MAX_SAFE_INTEGER) {
+      throw new Error('AMP_ACP_DIAL_CACHE_TTL_SECONDS must be a finite non-negative number.');
+    }
     let serviceURL: URL;
     try {
       serviceURL = new URL(options.url ?? process.env.AMP_URL ?? 'https://ampcode.com/');
@@ -98,23 +144,44 @@ export function createRemoteDialReader(options: RemoteDialOptions = {}): (cwd: s
       return { authRequired: false, body };
     };
 
-    let token = await readKey();
+    const token = await readKey();
     if (!token) throw new Error('Remote Dial requires Amp authentication. Run amp login or set AMP_API_KEY.');
-    let result = await request(token);
-    if (result.authRequired && !configuredKey) {
-      // Let Amp own OAuth refresh and credential-file updates. `usage` performs
-      // no inference and does not load project plugins. Never expose its output.
-      await new Promise<void>((resolve, reject) => {
-        execFile(command, [...commandArgs, 'usage'], { cwd, timeout: timeoutMs, windowsHide: true }, (error) => {
-          if (error) reject(new Error('Amp login refresh failed. Run amp login and retry.'));
-          else resolve();
+    const file = cachePath(cacheDirectory, serviceURL, token);
+    const cached = await readCachedDial(file, ttlMs, now());
+    if (cached) return cached;
+    const pending = pendingReads.get(file);
+    if (pending) return [...await pending];
+
+    const refresh = async (initialToken: string): Promise<string[]> => {
+      let token = initialToken;
+      let result = await request(token);
+      if (result.authRequired && !configuredKey) {
+        // Let Amp own OAuth refresh and credential-file updates. `usage` performs
+        // no inference and does not load project plugins. Never expose its output.
+        await new Promise<void>((resolve, reject) => {
+          execFile(command, [...commandArgs, 'usage'], { cwd, timeout: timeoutMs, windowsHide: true }, (error) => {
+            if (error) reject(new Error('Amp login refresh failed. Run amp login and retry.'));
+            else resolve();
+          });
         });
-      });
-      token = await readKey();
-      if (!token) throw new Error('Amp login credentials are unavailable after refresh.');
-      result = await request(token);
+        const refreshedToken = await readKey();
+        if (!refreshedToken) throw new Error('Amp login credentials are unavailable after refresh.');
+        token = refreshedToken;
+        result = await request(token);
+      }
+      if (result.authRequired) throw new Error('Amp authentication expired or was rejected. Run amp login or update AMP_API_KEY.');
+      const modes = parseDial(result.body);
+      // OAuth refresh can rotate the key. Only the credential that succeeded owns
+      // this entry; switching accounts never reuses the previous account's Dial.
+      await writeCachedDial(cachePath(cacheDirectory, serviceURL, token), modes, now());
+      return modes;
+    };
+    const discovery = refresh(token);
+    pendingReads.set(file, discovery);
+    try {
+      return [...await discovery];
+    } finally {
+      if (pendingReads.get(file) === discovery) pendingReads.delete(file);
     }
-    if (result.authRequired) throw new Error('Amp authentication expired or was rejected. Run amp login or update AMP_API_KEY.');
-    return parseDial(result.body);
   };
 }

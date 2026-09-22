@@ -3,8 +3,13 @@ import { AgentSideConnection, ClientSideConnection, ndJsonStream } from '@agentc
 import { createAmpModeCatalog } from './amp-modes.js';
 import { createRemoteDialReader } from './amp-remote-dial.js';
 import { AmpAcpAgent } from './server.js';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
-it('uses the saved remote Dial over ACP, refreshes new sessions, and passes selected keys to Amp', async () => {
+it('uses the cached remote Dial over ACP, refreshes after expiry, and preserves existing session modes', async () => {
+  const cacheDirectory = await mkdtemp(path.join(tmpdir(), 'amp-dial-session-'));
+  let now = Date.now();
   let dial = ['remote-reviewer', 'remote-coder'];
   let offline = false;
   const server = Bun.serve({
@@ -29,7 +34,7 @@ it('uses the saved remote Dial over ACP, refreshes new sessions, and passes sele
   }, {
     modeCatalog: createAmpModeCatalog({
       modeSource: 'remote',
-      readRemoteDial: createRemoteDialReader({ url: server.url.href, apiKey: 'test-token' }),
+      readRemoteDial: createRemoteDialReader({ url: server.url.href, apiKey: 'test-token', cacheDirectory, now: () => now }),
       trustPluginDiscovery: false,
     }),
   }), ndJsonStream(agentToClient.writable, clientToAgent.readable));
@@ -45,6 +50,11 @@ it('uses the saved remote Dial over ACP, refreshes new sessions, and passes sele
     expect(executedModes).toEqual(['remote-coder']);
 
     dial = ['remote-new', 'remote-reviewer'];
+    const cached = await client.newSession({ cwd: process.cwd(), mcpServers: [] });
+    expect(cached.configOptions?.find((option) => option.id === 'amp-mode')).toMatchObject({
+      options: [{ value: 'remote-reviewer' }, { value: 'remote-coder' }],
+    });
+    now += 24 * 60 * 60 * 1000;
     const next = await client.newSession({ cwd: process.cwd(), mcpServers: [] });
     expect(next.configOptions?.find((option) => option.id === 'amp-mode')).toMatchObject({
       currentValue: 'remote-new',
@@ -54,8 +64,10 @@ it('uses the saved remote Dial over ACP, refreshes new sessions, and passes sele
     await client.prompt({ sessionId: first.sessionId, prompt: [{ type: 'text', text: 'continue' }] });
     expect(executedModes).toEqual(['remote-coder', 'remote-coder']);
     offline = true;
+    now += 24 * 60 * 60 * 1000;
     await expect(client.newSession({ cwd: process.cwd(), mcpServers: [] })).rejects.toThrow('Remote Amp Dial discovery failed');
   } finally {
     server.stop(true);
+    await rm(cacheDirectory, { recursive: true, force: true });
   }
 });
