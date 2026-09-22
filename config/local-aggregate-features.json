@@ -55,6 +55,18 @@
       "relatedIssues": [],
       "disposition": "internal",
       "reason": "Local Amp plugin-mode discovery integration; no upstream issue or feedback has been recorded."
+    },
+    {
+      "branch": "feature/amp-remote-dial",
+      "lastPackaged": {
+        "sourceCommit": "50c31c00d4ebf572c1a0990b8e432533f293606a",
+        "aggregateCommit": "21b17f9146991652ab5ab310ed7b25e99f760cd4"
+      },
+      "specIssue": null,
+      "upstreamFeedback": [],
+      "relatedIssues": [],
+      "disposition": "internal",
+      "reason": "Follow the account's saved remote Dial through Amp's internal API; intentionally fork-local. Depends on the registered plugin-mode discovery feature."
     }
   ]
 }
