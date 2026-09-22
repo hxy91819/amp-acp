@@ -1,0 +1,60 @@
+{
+  "version": 3,
+  "aggregate": {
+    "branch": "local/aggregate",
+    "upstreamRef": "upstream/main",
+    "lastIntegratedUpstreamCommit": "d82473919f4e1db28664d929075739ec752f3e9c",
+    "stableTagPattern": "^v\\d+\\.\\d+\\.\\d+$",
+    "upstreamRepository": "tao12345666333/amp-acp"
+  },
+  "features": [
+    {
+      "branch": "fix/amp-steer-v0.10",
+      "lastPackaged": {
+        "sourceCommit": "9344f5be7f36abb5b9981433564f09c57e1eadce",
+        "aggregateCommit": "55232e89a73b2277cf307d4adf5fe99595f7eca4"
+      },
+      "specIssue": null,
+      "upstreamFeedback": [
+        {
+          "repository": "tao12345666333/amp-acp",
+          "number": 61,
+          "feedbackUrl": "https://github.com/tao12345666333/amp-acp/issues/61"
+        }
+      ],
+      "relatedIssues": [],
+      "disposition": "reported",
+      "reason": "Upstream #61 remains open; the maintainer endorsed the approach and requested a PR after rebasing it over Orb execution and durable thread mapping."
+    },
+    {
+      "branch": "fix/amp-persistent-steer-v0.10",
+      "lastPackaged": {
+        "sourceCommit": "c47d2c7dd11280c2df00e3876088071f01249145",
+        "aggregateCommit": "03c4f12cc72d9e02975816851797763d2e1d254a"
+      },
+      "specIssue": null,
+      "upstreamFeedback": [
+        {
+          "repository": "tao12345666333/amp-acp",
+          "number": 61,
+          "feedbackUrl": "https://github.com/tao12345666333/amp-acp/issues/61"
+        }
+      ],
+      "relatedIssues": [],
+      "disposition": "reported",
+      "reason": "Upstream #61 remains open; the maintainer endorsed the steering design, while the fork retains the follow-up persistence and cancellation hardening needed on the current upstream baseline."
+    },
+    {
+      "branch": "fix/amp-plugin-mode-discovery-v0.10",
+      "lastPackaged": {
+        "sourceCommit": "62dbb523fc90ac3171ff259fbdece7a524ae72e4",
+        "aggregateCommit": "4e33ce758a3baa8813ec4c58510e498ed4d67eea"
+      },
+      "specIssue": null,
+      "upstreamFeedback": [],
+      "relatedIssues": [],
+      "disposition": "internal",
+      "reason": "Local Amp plugin-mode discovery integration; no upstream issue or feedback has been recorded."
+    }
+  ]
+}
