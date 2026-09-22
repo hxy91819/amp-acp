@@ -490,8 +490,8 @@ export function createAmpModeCatalog(options: AmpModeCatalogOptions = {}): AmpMo
   };
 
   return (cwd) => {
-    // Fetch for every new/resumed session, so a saved Dial change is visible
-    // without restarting the adapter. Existing sessions keep their own catalog.
+    // The remote reader owns the shared Dial cache. Rebuild local labels for
+    // each new/resumed session; existing sessions keep their own catalog.
     if (modeSource !== 'local') {
       return discover(cwd).catch((error: unknown) => ({
         modes: [],
