@@ -3,6 +3,7 @@ import type { Dirent } from 'node:fs';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { createRemoteDialReader } from './amp-remote-dial.js';
 
 /** A selectable Amp mode. `key` is the execution value; `label` is UI-only. */
 export interface AmpModeOption {
@@ -353,6 +354,10 @@ function runAmpPluginsList(
 }
 
 export interface AmpModeCatalogOptions {
+  /** Defaults to AMP_ACP_MODE_SOURCE, or local. Remote follows the saved account Dial. */
+  modeSource?: 'local' | 'remote';
+  /** Override remote discovery for embedding or tests. */
+  readRemoteDial?: (cwd: string) => Promise<readonly string[]>;
   /** Amp CLI command; defaults to AMP_CLI_PATH or `amp`. */
   command?: string;
   commandArgs?: readonly string[];
@@ -429,9 +434,16 @@ export function createAmpModeCatalog(options: AmpModeCatalogOptions = {}): AmpMo
   const cacheTtlMs = options.cacheTtlMs ?? 60_000;
   const trustPluginDiscovery = options.trustPluginDiscovery ?? process.env.AMP_ACP_TRUST_PLUGIN_DISCOVERY === '1';
   const visibleModeKeys = options.visibleModeKeys ?? configuredModeKeys();
+  const modeSource = options.modeSource ?? process.env.AMP_ACP_MODE_SOURCE ?? 'local';
+  const readRemoteDial = options.readRemoteDial ?? createRemoteDialReader({ command, commandArgs, timeoutMs });
   const cache = new Map<string, { expiresAt: number; promise: Promise<AmpModeCatalogResult> }>();
 
   const discover = async (cwd: string): Promise<AmpModeCatalogResult> => {
+    if (modeSource !== 'local' && modeSource !== 'remote') {
+      throw new Error('AMP_ACP_MODE_SOURCE must be local or remote.');
+    }
+    const remoteKeys = modeSource === 'remote' ? await readRemoteDial(cwd) : undefined;
+    if (remoteKeys?.length === 0) throw new Error('The saved remote Amp Dial is empty.');
     const diagnostics: string[] = [];
     let staticModes: ParsedMetadata;
     try {
@@ -462,11 +474,30 @@ export function createAmpModeCatalog(options: AmpModeCatalogOptions = {}): AmpMo
       }
     }
 
-    const modes = selectVisibleModes(mergePluginModes(pluginModes, diagnostics), visibleModeKeys, diagnostics);
+    const discoveredModes = mergePluginModes(pluginModes, diagnostics);
+    // The authenticated remote Dial is authoritative, including modes whose
+    // plugins Amp downloads only when it starts. Static metadata supplies labels
+    // when available; it must not hide newly saved remote modes.
+    const byKey = new Map(discoveredModes.map((mode) => [mode.key, mode]));
+    const modes = remoteKeys
+      ? remoteKeys.map((key) => byKey.get(key) ?? {
+        key,
+        label: key,
+        description: 'Mode from your saved remote Amp Dial. Amp owns its model and tool configuration.',
+      })
+      : selectVisibleModes(discoveredModes, visibleModeKeys, diagnostics);
     return diagnostics.length > 0 ? { modes, diagnostic: diagnostics.join(' ') } : { modes };
   };
 
   return (cwd) => {
+    // Fetch for every new/resumed session, so a saved Dial change is visible
+    // without restarting the adapter. Existing sessions keep their own catalog.
+    if (modeSource !== 'local') {
+      return discover(cwd).catch((error: unknown) => ({
+        modes: [],
+        diagnostic: `Remote Amp Dial discovery failed: ${errorMessage(error)}`,
+      }));
+    }
     const cached = cache.get(cwd);
     if (cached && cached.expiresAt > Date.now()) return cached.promise;
 

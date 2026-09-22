@@ -144,9 +144,27 @@ Set `AMP_ACP_TRUST_PLUGIN_DISCOVERY=1` only when every project, personal, and wo
 
 The selector value is the plugin mode's stable key, which amp-acp passes to Amp as `--mode <key>`. A plugin label is UI metadata and a plugin's underlying `provider/model` ID belongs to its agent definition; amp-acp does not infer either from a key or change model routing itself. A value that was not advertised for the session is rejected rather than silently falling back to another mode. Amp fixes the mode when the first prompt starts, so choose it before sending that prompt.
 
-### Restricting the ACP selector to a saved Dial
+### Following your remote Dial
 
-Amp's mode catalog is broader than its Dial. To expose only an ordered subset in an ACP client, set `AMP_ACP_MODE_KEYS` to a comma-separated list of stable mode keys, for example:
+Set `AMP_ACP_MODE_SOURCE=remote` to use the Dial saved in your Amp account:
+
+```sh
+AMP_ACP_MODE_SOURCE=remote amp-acp
+```
+
+Every new or resumed ACP session reads the effective ordered `dialModes` from Amp's authenticated `getUserInfo` endpoint, the same data used by the Amp CLI. This takes precedence over `AMP_ACP_MODE_KEYS`. Save changes in Amp's Dial settings and create a new session to see them; the adapter does not need to restart. A client's cached model picker may need a refresh. Existing sessions keep their selected mode; a resumed session whose saved mode has left the Dial is rejected rather than switched to another mode.
+
+Only remote Dial keys are advertised. Local plugin metadata supplies labels when available; newly saved remote modes remain selectable even before their plugins reach the local cache. The selected key is passed unchanged to Amp, which loads the agent and applies its server-side model routing, model tuning, tools, and billing. amp-acp does not replace your remote configuration with built-in model choices.
+
+Authentication uses `AMP_API_KEY` when set, otherwise the credentials written by `amp login` in `$XDG_DATA_HOME/amp/secrets.json` (default `~/.local/share/amp/secrets.json`). Expired stored credentials are refreshed through `amp usage`, without running inference or project plugins. For a custom Amp service, set `AMP_URL` consistently for the adapter and CLI. Discovery uses that variable, not a URL override in an Amp settings file.
+
+Missing saved Dial settings, authentication errors, timeouts, and invalid responses fail session creation explicitly. Remote discovery never falls back to the built-in mode list or an old local snapshot. Resetting your remote Dial to Amp's standard default may remove the saved list; select local discovery if you want the default catalog instead.
+
+This integration uses Amp's internal `POST /api/internal?getUserInfo` API, verified with CLI `0.0.1790064360-g301b53`. It is not a public API stability contract and may need updates when Amp changes. The dependency is isolated in `src/amp-remote-dial.ts`; response bodies and credentials are never included in discovery diagnostics.
+
+### Configuring a local Dial snapshot
+
+Local discovery remains the default (`AMP_ACP_MODE_SOURCE=local`). Amp's mode catalog is broader than its Dial. To expose only an ordered local subset in an ACP client, set `AMP_ACP_MODE_KEYS` to a comma-separated list of stable mode keys, for example:
 
 ```sh
 AMP_ACP_MODE_KEYS=low,medium,high,reviewer
@@ -154,11 +172,7 @@ AMP_ACP_MODE_KEYS=low,medium,high,reviewer
 
 The adapter preserves this order and only exposes entries that its normal static discovery has verified for the session. It keeps its established `medium` default when that key remains visible, and otherwise defaults to the first configured visible key. A missing configured key is reported in the option diagnostic and remains hidden; if none of the configured keys is available, session creation fails clearly instead of falling back to another mode. The selected key is still passed to Amp unchanged, so Amp remains responsible for model routing and billing.
 
-#### Limitations
-
-This is an explicit configuration snapshot, not a live view of the account Dial. Amp does not currently publish a non-executing CLI or API interface for reading the effective Dial. Its available-mode and plugin commands expose a broader catalog, so amp-acp cannot use them to infer the account's selected modes or their order.
-
-Update `AMP_ACP_MODE_KEYS` and restart the adapter when the desired Dial changes. Existing sessions retain the mode chosen before their first prompt and must be recreated to use a different mode. Website scraping and private Amp endpoints are deliberately unsupported because they depend on browser authentication and unstable internal contracts. If Amp publishes a supported effective-Dial interface, this snapshot can be replaced with live discovery while retaining the existing availability checks and failure behavior.
+Update `AMP_ACP_MODE_KEYS` and restart the adapter to change this explicit local snapshot, or use remote discovery above to follow your saved account Dial automatically. Existing sessions retain their selected mode.
 
 Native steering uses the CLI transport because Amp exposes the steer marker through `--stream-json-input`. Set `AMP_ACP_CANCEL_MODE=steer` for clients such as BB that represent steering as ACP cancellation followed immediately by another prompt. In that mode, the adapter keeps the input stream alive so the next prompt writes `{"steer":true}` to the active Amp process; closing the ACP connection still terminates it. Without the setting, cancellation terminates Amp as required by the standard ACP stop behavior. CLI mode and permission options must be selected before the first prompt; start a new ACP session to change them afterward. The SDK compatibility transport does not currently expose the steer marker.
 

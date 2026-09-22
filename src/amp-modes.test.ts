@@ -37,9 +37,11 @@ describe('createAmpModeCatalog', () => {
   let projectWithoutPlugin = '';
   let sideEffectMarker = '';
   const originalModeKeys = process.env.AMP_ACP_MODE_KEYS;
+  const originalModeSource = process.env.AMP_ACP_MODE_SOURCE;
 
   beforeAll(async () => {
     delete process.env.AMP_ACP_MODE_KEYS;
+    delete process.env.AMP_ACP_MODE_SOURCE;
     fixtureDir = await mkdtemp(path.join(os.tmpdir(), 'amp-mode-catalog-test-'));
     projectWithPlugin = path.join(fixtureDir, 'with-plugin');
     projectWithoutPlugin = path.join(fixtureDir, 'without-plugin');
@@ -59,6 +61,8 @@ describe('createAmpModeCatalog', () => {
     } else {
       process.env.AMP_ACP_MODE_KEYS = originalModeKeys;
     }
+    if (originalModeSource === undefined) delete process.env.AMP_ACP_MODE_SOURCE;
+    else process.env.AMP_ACP_MODE_SOURCE = originalModeSource;
   });
 
   it('discovers static plugin metadata per working directory and preserves the built-in modes', async () => {
@@ -74,6 +78,52 @@ describe('createAmpModeCatalog', () => {
     expect(withPlugin).toEqual({ modes: [...BUILTIN_AMP_MODES, syntheticMode] });
     expect(withoutPlugin).toEqual({ modes: BUILTIN_AMP_MODES });
     await expect(stat(sideEffectMarker)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('follows only the remote Dial in order, including newly saved modes absent from the local cache', async () => {
+    const catalog = createAmpModeCatalog({
+      modeSource: 'remote',
+      readRemoteDial: async () => ['new-remote-mode', syntheticMode.key],
+      visibleModeKeys: ['low', 'obsolete-mode'],
+      systemPluginDirectory: path.join(fixtureDir, 'no-system-plugin'),
+      globalPluginCacheDirectory: path.join(fixtureDir, 'no-global-plugin'),
+      trustPluginDiscovery: false,
+    });
+    const result = await catalog(projectWithPlugin);
+    expect(result.modes.map((mode) => mode.key)).toEqual(['new-remote-mode', syntheticMode.key]);
+    expect(result.modes[1]).toEqual(syntheticMode);
+    expect(result.diagnostic).toBeUndefined();
+    await expect(stat(sideEffectMarker)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('refreshes the remote Dial for the next session and never falls back after a sync failure', async () => {
+    let keys = ['remote-first', 'remote-second'];
+    let offline = false;
+    const catalog = createAmpModeCatalog({
+      modeSource: 'remote',
+      readRemoteDial: async () => { if (offline) throw new Error('offline'); return keys; },
+      systemPluginDirectory: path.join(fixtureDir, 'no-system-plugin'),
+      globalPluginCacheDirectory: path.join(fixtureDir, 'no-global-plugin'),
+      trustPluginDiscovery: false,
+    });
+    const first = await catalog(projectWithoutPlugin);
+    keys = ['remote-second', 'remote-new'];
+    expect((await catalog(projectWithoutPlugin)).modes.map((mode) => mode.key)).toEqual(keys);
+    expect(first.modes.map((mode) => mode.key)).toEqual(['remote-first', 'remote-second']);
+    offline = true;
+    expect(await catalog(projectWithoutPlugin)).toEqual({ modes: [], diagnostic: 'Remote Amp Dial discovery failed: offline' });
+    offline = false;
+    expect((await catalog(projectWithoutPlugin)).modes.map((mode) => mode.key)).toEqual(keys);
+  });
+
+  it('enables remote discovery through AMP_ACP_MODE_SOURCE', async () => {
+    process.env.AMP_ACP_MODE_SOURCE = 'remote';
+    try {
+      const catalog = createAmpModeCatalog({ readRemoteDial: async () => ['remote-only'] });
+      expect((await catalog(projectWithoutPlugin)).modes.map((mode) => mode.key)).toEqual(['remote-only']);
+    } finally {
+      delete process.env.AMP_ACP_MODE_SOURCE;
+    }
   });
 
   it('reads only plugin entry files and lets a project plugin shadow the same-named system plugin', async () => {
