@@ -14,7 +14,8 @@ This is an ACP (Agent Client Protocol) adapter that bridges Amp Code to ACP-comp
 - `src/server.ts` — `AmpAcpAgent` class: handles sessions, prompts, MCP config, and calls `@ampcode/sdk` (formerly `@sourcegraph/amp-sdk`)
 - `src/amp-transport.ts` — Executes Amp through the CLI or SDK and manages native thread archival
 - `src/thread-mapping-store.ts` — Persists durable ACP-session-to-Amp-thread mappings for resume and lifecycle operations
-- `src/amp-modes.ts` — Discovers selectable Amp modes from static plugin metadata, with an explicit trusted CLI-discovery opt-in
+- `src/amp-modes.ts` — Builds session mode selectors from local plugin metadata or the saved remote Dial
+- `src/amp-remote-dial.ts` — Reads Amp's internal `getUserInfo` Dial using CLI credentials; owns authentication refresh and response validation
 - `src/to-acp.ts` — Converts Amp stream events to ACP `sessionUpdate` notifications
 - `src/mcp-config.ts` — Converts ACP MCP server configs to Amp SDK format
 - `src/utils.ts` — Node-to-Web stream converters
