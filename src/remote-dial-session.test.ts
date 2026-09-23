@@ -54,7 +54,7 @@ it('uses the cached remote Dial over ACP, refreshes after expiry, and preserves 
     expect(cached.configOptions?.find((option) => option.id === 'amp-mode')).toMatchObject({
       options: [{ value: 'remote-reviewer' }, { value: 'remote-coder' }],
     });
-    now += 24 * 60 * 60 * 1000;
+    now += 5 * 60 * 1000;
     const next = await client.newSession({ cwd: process.cwd(), mcpServers: [] });
     expect(next.configOptions?.find((option) => option.id === 'amp-mode')).toMatchObject({
       currentValue: 'remote-new',
@@ -64,7 +64,7 @@ it('uses the cached remote Dial over ACP, refreshes after expiry, and preserves 
     await client.prompt({ sessionId: first.sessionId, prompt: [{ type: 'text', text: 'continue' }] });
     expect(executedModes).toEqual(['remote-coder', 'remote-coder']);
     offline = true;
-    now += 24 * 60 * 60 * 1000;
+    now += 5 * 60 * 1000;
     await expect(client.newSession({ cwd: process.cwd(), mcpServers: [] })).rejects.toThrow('Remote Amp Dial discovery failed');
   } finally {
     server.stop(true);

@@ -121,14 +121,15 @@ writeFileSync(${JSON.stringify(credentialPath)}, ${JSON.stringify(JSON.stringify
 
 describe('remote Dial cache', () => {
   const day = 24 * 60 * 60 * 1000;
+  const defaultTtl = 5 * 60 * 1000;
 
-  it('reuses the default 24-hour cache across readers and directories, then refreshes at expiry', async () => {
+  it('reuses the default 5-minute cache across readers and directories, then refreshes at expiry', async () => {
     let now = Date.now();
     let requests = 0;
     const url = serve(() => Response.json({ ok: true, result: { dialModes: [`mode-${++requests}`] } }));
     const options = { url, apiKey: 'test-token', now: () => now };
     expect(await createRemoteDialReader(options)(fixtureDir)).toEqual(['mode-1']);
-    now += day - 1;
+    now += defaultTtl - 1;
     expect(await createRemoteDialReader(options)(tmpdir())).toEqual(['mode-1']);
     expect(requests).toBe(1);
     now++;
@@ -229,7 +230,7 @@ console.log(JSON.stringify(await createRemoteDialReader(${JSON.stringify(options
     expect(await read(fixtureDir)).toEqual(['mode-1']);
     offline = true;
     expect(await read(fixtureDir)).toEqual(['mode-1']);
-    now += day;
+    now += defaultTtl;
     const results = await Promise.allSettled([read(fixtureDir), read(fixtureDir)]);
     expect(results.map((result) => result.status)).toEqual(['rejected', 'rejected']);
     expect(requests).toBe(2);
