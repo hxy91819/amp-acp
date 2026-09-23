@@ -12,7 +12,7 @@ export interface RemoteDialOptions {
   commandArgs?: readonly string[];
   timeoutMs?: number;
   cacheDirectory?: string;
-  /** Defaults to AMP_ACP_DIAL_CACHE_TTL_SECONDS, or 24 hours. Zero forces refresh. */
+  /** Defaults to AMP_ACP_DIAL_CACHE_TTL_SECONDS, or 5 minutes. Zero forces refresh. */
   cacheTtlMs?: number;
   now?: () => number;
 }
@@ -82,7 +82,7 @@ export function createRemoteDialReader(options: RemoteDialOptions = {}): (cwd: s
   const now = options.now ?? Date.now;
 
   return async (cwd) => {
-    const ttlMs = options.cacheTtlMs ?? Number(process.env.AMP_ACP_DIAL_CACHE_TTL_SECONDS ?? '86400') * 1000;
+    const ttlMs = options.cacheTtlMs ?? Number(process.env.AMP_ACP_DIAL_CACHE_TTL_SECONDS ?? '300') * 1000;
     if (!Number.isFinite(ttlMs) || ttlMs < 0 || ttlMs > Number.MAX_SAFE_INTEGER) {
       throw new Error('AMP_ACP_DIAL_CACHE_TTL_SECONDS must be a finite non-negative number.');
     }
