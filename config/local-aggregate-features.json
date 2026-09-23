@@ -59,8 +59,8 @@
     {
       "branch": "feature/amp-remote-dial",
       "lastPackaged": {
-        "sourceCommit": "1bf96e52782de7c6586ab04cf0351b96a0872641",
-        "aggregateCommit": "5d2e0afc8598a517a571fe8db98d2bf180437e12"
+        "sourceCommit": "c7dfbae0cc1d209d6bc4f65481f3a73c84a14e97",
+        "aggregateCommit": "f14f87c43c38b4c1287384790fbe55ec412aa2af"
       },
       "specIssue": null,
       "upstreamFeedback": [],
