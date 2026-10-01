@@ -91,6 +91,18 @@
       "relatedIssues": [],
       "disposition": "internal",
       "reason": "Expose native concurrent ACP steering for local Amp CLI sessions and keep BB delivery labels accurate. Explicitly fall back for ambiguous pending echo text; distinguish image echoes from tool results. No upstream ticket has been filed."
+    },
+    {
+      "branch": "fix/amp-large-image-input",
+      "lastPackaged": {
+        "sourceCommit": "0fbc2f2d230d66a3b9b861fdf529d78928434395",
+        "aggregateCommit": "b13ea0a4424001988979e0be01addd677fc57115"
+      },
+      "specIssue": null,
+      "upstreamFeedback": [],
+      "relatedIssues": [],
+      "disposition": "internal",
+      "reason": "Preserve oversized local CLI image inputs as durable original-byte file references; report pre-echo CLI errors and protect replacement processes during cancelled error cleanup. No upstream ticket has been filed."
     }
   ]
 }
