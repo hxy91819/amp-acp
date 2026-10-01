@@ -93,7 +93,7 @@ Run `amp login` before starting amp-acp. The adapter and CLI share the same Amp 
 - **Conversation continuity** — Thread context is preserved across multiple prompts within a session
 - **Session resume** — `session/load` reattaches to the underlying Amp thread after amp-acp restarts, so ACP clients can reopen earlier sessions
 - **Native thread lifecycle** — ACP clients can persist Amp's durable thread ID and archive or unarchive that exact thread
-- **Native steering** — A prompt submitted after ACP cancellation is marked as an Amp steer instead of waiting in the thread queue
+- **Native steering** — Local CLI sessions accept additional ACP prompts during an active turn and send them directly to Amp as steer instructions; BB records these messages as **Steer**
 
 ### Native Amp thread lifecycle extension
 
@@ -180,7 +180,9 @@ The adapter preserves this order and only exposes entries that its normal static
 
 Update `AMP_ACP_MODE_KEYS` and restart the adapter to change this explicit local snapshot, or use remote discovery above to follow your saved account Dial automatically. Existing sessions retain their selected mode.
 
-Native steering uses the CLI transport because Amp exposes the steer marker through `--stream-json-input`. Set `AMP_ACP_CANCEL_MODE=steer` for clients such as BB that represent steering as ACP cancellation followed immediately by another prompt. In that mode, the adapter keeps the input stream alive so the next prompt writes `{"steer":true}` to the active Amp process; closing the ACP connection still terminates it. Without the setting, cancellation terminates Amp as required by the standard ACP stop behavior. CLI mode and permission options must be selected before the first prompt; start a new ACP session to change them afterward. The SDK compatibility transport does not currently expose the steer marker.
+Native steering uses the CLI transport because Amp exposes the steer marker through `--stream-json-input`. The adapter declares `_meta.midTurnSteering: true` in its ACP initialize response when the transport supports direct injection. BB then submits another `session/prompt` during the active turn, and the adapter writes `{"steer":true}` to the same Amp process. The original prompt keeps ownership of the output stream and completes after the latest accepted instruction is processed. BB records this delivery as **Steer** without first sending `session/cancel`. If an earlier input with the same text has not been echoed yet (including image-only inputs, whose images Amp omits from echoes), the adapter rejects concurrent injection with `already in flight` so BB can cancel and resend safely. These ambiguous deliveries retain the **Interrupted and sent** label. BB disables native injection for the remainder of that connection after this rejection; reconnecting negotiates it again.
+
+`AMP_ACP_CANCEL_MODE=steer` remains available for clients that use cancellation followed by a replacement prompt: it keeps the input stream alive and marks the replacement as a steer. Without that setting, cancellation terminates Amp as required by the standard ACP stop behavior. Closing the ACP connection always terminates its CLI processes. CLI mode and permission options must be selected before the first prompt; start a new ACP session to change them afterward. SDK and Orb execution do not support native mid-turn injection; overlapping prompts return an ACP invalid-parameters error containing `already in flight`, which allows BB to use its interrupt fallback.
 
 ## MCP Configuration Passthrough
 
