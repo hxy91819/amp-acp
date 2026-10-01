@@ -79,6 +79,18 @@
       "relatedIssues": [],
       "disposition": "internal",
       "reason": "Preserve ACP image input through the local Amp CLI, including resumed sessions and steering; report unsupported SDK/Orb image input explicitly. No upstream ticket has been filed."
+    },
+    {
+      "branch": "fix/amp-native-steering",
+      "lastPackaged": {
+        "sourceCommit": "44ff7391a55157c196df902109f6a61cfa2b23fd",
+        "aggregateCommit": "12998b4f48257e798aafa6290f4f6f94d5bd750f"
+      },
+      "specIssue": null,
+      "upstreamFeedback": [],
+      "relatedIssues": [],
+      "disposition": "internal",
+      "reason": "Expose native concurrent ACP steering for local Amp CLI sessions and keep BB delivery labels accurate. Explicitly fall back for ambiguous pending echo text; distinguish image echoes from tool results. No upstream ticket has been filed."
     }
   ]
 }
