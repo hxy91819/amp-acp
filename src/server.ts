@@ -31,6 +31,7 @@ import {
   isAmpThreadId,
   setAmpThreadArchived,
   type AmpExecutionOptions,
+  type AmpPromptContent,
   type AmpThreadLifecycleOptions,
   type AmpTransport,
 } from './amp-transport.js';
@@ -212,7 +213,7 @@ export class AmpAcpAgent implements Agent {
       },
       agentCapabilities: {
         loadSession: true,
-        promptCapabilities: { image: true, embeddedContext: true },
+        promptCapabilities: { image: this.transport.name === 'cli', embeddedContext: true },
         mcpCapabilities: { http: true, sse: true },
         sessionCapabilities: { resume: {} },
         _meta: {
@@ -443,6 +444,15 @@ export class AmpAcpAgent implements Agent {
   async prompt(params: PromptRequest): Promise<PromptResponse> {
     const s = this.sessions.get(params.sessionId);
     if (!s) throw new Error('Session not found');
+    const transport = s.executor === 'orb' ? this.orbTransport : this.transport;
+    if (transport.name !== 'cli' && params.prompt.some((chunk) => chunk.type === 'image')) {
+      throw RequestError.invalidParams(undefined, 'Image prompts require the local CLI transport; SDK and Orb execution only accept text');
+    }
+    for (const chunk of params.prompt) {
+      if (chunk.type === 'image' && !['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(chunk.mimeType)) {
+        throw RequestError.invalidParams(undefined, `Unsupported image format: ${chunk.mimeType}. Amp accepts JPEG, PNG, GIF, and WebP.`);
+      }
+    }
     s.cancelled = false;
     s.active = true;
     s.modeLocked = true;
@@ -450,6 +460,7 @@ export class AmpAcpAgent implements Agent {
     s.steerNextPrompt = false;
 
     let textInput = '';
+    const promptContent: AmpPromptContent[] = [];
     for (const chunk of params.prompt) {
       switch (chunk.type) {
         case 'text':
@@ -475,10 +486,21 @@ If there are Cursor rules (in .cursor/rules/ or .cursorrules), Claude rules (CLA
           }
           break;
         case 'image':
+          if (textInput) {
+            promptContent.push({ type: 'text', text: textInput });
+            textInput = '';
+          }
+          promptContent.push({
+            type: 'image',
+            source: { type: 'base64', media_type: chunk.mimeType, data: chunk.data },
+          });
           break;
         default:
           break;
       }
+    }
+    if (promptContent.length > 0 && textInput) {
+      promptContent.push({ type: 'text', text: textInput });
     }
 
     const options: AmpExecutionOptions = {
@@ -510,13 +532,12 @@ If there are Cursor rules (in .cursor/rules/ or .cursorrules), Claude rules (CLA
 
     const controller = new AbortController();
     s.controller = controller;
-    const transport = s.executor === 'orb' ? this.orbTransport : this.transport;
     if (transport.name === 'cli') s.processStarted = true;
 
     try {
       for await (const message of transport.execute({
         sessionId: params.sessionId,
-        prompt: textInput,
+        prompt: promptContent.length > 0 ? promptContent : textInput,
         options,
         signal: controller.signal,
         steer: s.executor === 'local' && steer,
