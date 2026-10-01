@@ -134,7 +134,9 @@ During `session/load`, prior messages are replayed to the client as `session/upd
 
 By default, amp-acp executes the installed Amp CLI directly through its streaming JSON interface. Set `AMP_ACP_TRANSPORT=sdk` to use `@ampcode/sdk` as a compatibility fallback; both transports pass the selected built-in or plugin-defined Amp mode through to Amp.
 
-Image input requires the local CLI transport and an Amp CLI version that supports [streaming image input](https://ampcode.com/docs/cli/streaming-json). Images are sent as base64 content blocks with their MIME types and position relative to the text preserved. The pinned SDK accepts text only, so SDK transport advertises no image-input capability; SDK and Orb sessions reject image blocks with an ACP invalid-parameters error instead of dropping them. Unsupported image MIME types are also rejected before execution starts.
+Image input requires the local CLI transport and an Amp CLI version that supports [streaming image input](https://ampcode.com/docs/cli/streaming-json). Images are sent as base64 content blocks with their MIME types and position relative to the text preserved. If the serialized CLI input exceeds Amp's 1 MiB limit, the adapter saves the original image bytes as files and replaces each image block with its absolute path and instructions to inspect it using `view_media` or another image-viewing tool. The files remain in the adapter's state directory under `images` so resumed threads can still open them; no resizing or recompression is applied. This also works during steering. Text that still exceeds the limit is rejected before execution starts. CLI execution errors are reported even when Amp exits successfully before echoing the input.
+
+The pinned SDK accepts text only, so SDK transport advertises no image-input capability; SDK and Orb sessions reject image blocks with an ACP invalid-parameters error instead of dropping them. Unsupported image MIME types are also rejected before execution starts.
 
 ### Plugin-defined modes
 

@@ -39,9 +39,11 @@ import { createAmpModeCatalog, type AmpModeCatalog, type AmpModeOption } from '.
 import { convertAcpMcpServersToAmpConfig, type AmpMcpConfig } from './mcp-config.js';
 import {
   FileThreadMappingStore,
+  defaultAmpAcpStateDir,
   type AmpThreadMapping,
   type ThreadMappingStore,
 } from './thread-mapping-store.js';
+import { prepareCliPrompt } from './cli-prompt.js';
 import { toAcpNotifications } from './to-acp.js';
 import { exportThreadHistory, exportThreadMessages, historyToNotifications, type ThreadHistoryExporter } from './thread-history.js';
 import path from 'node:path';
@@ -162,6 +164,8 @@ type SetThreadArchived = (
 ) => Promise<void>;
 
 interface AmpAcpAgentOptions {
+  /** Durable original-image files referenced by oversized local CLI prompts. */
+  imageDirectory?: string;
   threadStore?: ThreadMappingStore;
   setThreadArchived?: SetThreadArchived;
   exportThread?: ThreadHistoryExporter;
@@ -178,6 +182,7 @@ export class AmpAcpAgent implements Agent {
   private transport: AmpTransport;
   private orbTransport: AmpTransport;
   private threadStore: ThreadMappingStore;
+  private imageDirectory: string;
   private setThreadArchived: SetThreadArchived;
   sessions = new Map<string, SessionState>();
   private clientCapabilities?: ClientCapabilities;
@@ -195,6 +200,7 @@ export class AmpAcpAgent implements Agent {
     this.transport = transport;
     this.orbTransport = options.orbTransport ?? createAmpTransport('sdk');
     this.threadStore = options.threadStore ?? new FileThreadMappingStore();
+    this.imageDirectory = options.imageDirectory ?? path.join(defaultAmpAcpStateDir(), 'images');
     this.setThreadArchived = options.setThreadArchived ?? setAmpThreadArchived;
     this.exportThread = options.exportThread ?? exportThreadHistory;
     this.replayRetry = options.replayRetry ?? { attempts: 5, delayMs: 2000 };
@@ -497,6 +503,10 @@ If there are Cursor rules (in .cursor/rules/ or .cursorrules), Claude rules (CLA
     if (promptContent.length > 0 && textInput) {
       promptContent.push({ type: 'text', text: textInput });
     }
+    const input = promptContent.length > 0 ? promptContent : textInput;
+    const ampPrompt = s.executor === 'local' && transport.name === 'cli'
+      ? prepareCliPrompt(input, this.imageDirectory)
+      : input;
 
     const options: AmpExecutionOptions = {
       cwd: s.cwd,
@@ -531,7 +541,7 @@ If there are Cursor rules (in .cursor/rules/ or .cursorrules), Claude rules (CLA
       }
       const accepted = await transport.steer({
         sessionId: params.sessionId,
-        prompt: promptContent.length > 0 ? promptContent : textInput,
+        prompt: ampPrompt,
         options,
         signal: s.controller.signal,
         steer: true,
@@ -554,7 +564,7 @@ If there are Cursor rules (in .cursor/rules/ or .cursorrules), Claude rules (CLA
     try {
       for await (const message of transport.execute({
         sessionId: params.sessionId,
-        prompt: promptContent.length > 0 ? promptContent : textInput,
+        prompt: ampPrompt,
         options,
         signal: controller.signal,
         steer: s.executor === 'local' && steer,

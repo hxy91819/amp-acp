@@ -1,6 +1,7 @@
 import { execute, type AmpOptions } from '@ampcode/sdk';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import { formatPromptInput } from './cli-prompt.js';
 
 export type AmpMcpServerConfig =
   | {
@@ -169,17 +170,6 @@ export function buildAmpCliArgs(options: AmpExecutionOptions): string[] {
   if (options.mcpConfig) args.push('--mcp-config', JSON.stringify(options.mcpConfig));
 
   return args;
-}
-
-function formatPromptInput(prompt: AmpExecutionRequest['prompt'], steer: boolean): string {
-  return `${JSON.stringify({
-    type: 'user',
-    message: {
-      role: 'user',
-      content: typeof prompt === 'string' ? [{ type: 'text', text: prompt }] : prompt,
-    },
-    steer,
-  })}\n`;
 }
 
 function getPromptText(prompt: AmpExecutionRequest['prompt']): string {
@@ -428,6 +418,11 @@ export function createCliTransport(
         for (;;) {
           const queued = await session.queue.shift(signal);
           const { message } = queued;
+          if (message.type === 'result' && message.is_error) {
+            if (sessions.get(sessionId) === session) await terminateSession(sessionId);
+            yield message;
+            throw new Error(message.error ?? 'Amp CLI execution failed');
+          }
           if (queued.promptSequence !== undefined && queued.promptSequence >= promptSequence) {
             promptEchoed = true;
             lastEchoedSequence = queued.promptSequence;
@@ -440,7 +435,7 @@ export function createCliTransport(
         }
       } catch (error) {
         if (signal.aborted) {
-          if (!preserveCancelledProcess) await terminateSession(sessionId);
+          if (!preserveCancelledProcess && sessions.get(sessionId) === session) await terminateSession(sessionId);
           throw abortedError();
         }
         throw error;
