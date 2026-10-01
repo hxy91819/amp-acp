@@ -67,6 +67,18 @@
       "relatedIssues": [],
       "disposition": "internal",
       "reason": "Follow the account's saved remote Dial through Amp's internal API; intentionally fork-local. Depends on the registered plugin-mode discovery feature."
+    },
+    {
+      "branch": "fix/amp-image-input",
+      "lastPackaged": {
+        "sourceCommit": "91408771abaa834fd143ccc6a867ad73ef57afd3",
+        "aggregateCommit": "f0c22cbd068a2e20f457b42c23539504c39201be"
+      },
+      "specIssue": null,
+      "upstreamFeedback": [],
+      "relatedIssues": [],
+      "disposition": "internal",
+      "reason": "Preserve ACP image input through the local Amp CLI, including resumed sessions and steering; report unsupported SDK/Orb image input explicitly. No upstream ticket has been filed."
     }
   ]
 }

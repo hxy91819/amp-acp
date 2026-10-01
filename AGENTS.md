@@ -61,6 +61,7 @@ Commit and push every completed, verified change, including documentation and co
 | `fix/amp-persistent-steer-v0.10` | `c47d2c7d` | `03c4f12c` | [#61](https://github.com/tao12345666333/amp-acp/issues/61) |
 | `fix/amp-plugin-mode-discovery-v0.10` | `62dbb523` | `4e33ce75` | Internal; no upstream ticket |
 | `feature/amp-remote-dial` | `c7dfbae0` | `f14f87c4` | Internal; no upstream ticket |
+| `fix/amp-image-input` | `91408771` | `f0c22cbd` | Internal; no upstream ticket |
 
 Use `$open-source-fork-maintenance` before upstream synchronization, aggregate rebuilding, or local packaging. It checks new worktrees, source commit changes, upstream changes, and upstream feedback before asking for a rebase or packaging decision. When a stable-release tag pattern is configured, rebase affected source branches onto the latest matching tag and rebuild from that tag. Unreleased commits on the upstream ref after that tag are debt unless the user chooses them. When the user explicitly declines a rebase, incremental packaging on the existing local baseline remains allowed, but the registry must retain the previous upstream baseline and the result must report the outstanding upstream debt.
 <!-- open-source-fork-maintenance:end -->
