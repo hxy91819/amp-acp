@@ -47,11 +47,16 @@ export interface AmpStreamMessage {
 
 export interface AmpExecutionRequest {
   sessionId: string;
-  prompt: string;
+  prompt: string | AmpPromptContent[];
   options: AmpExecutionOptions;
   signal: AbortSignal;
   steer: boolean;
 }
+
+/** Content accepted by Amp CLI --stream-json-input. */
+export type AmpPromptContent =
+  | { type: 'text'; text: string }
+  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
 
 export interface AmpTransport {
   readonly name: 'cli' | 'sdk';
@@ -120,6 +125,9 @@ export async function setAmpThreadArchived(
 const sdkTransport: AmpTransport = {
   name: 'sdk',
   execute(request) {
+    if (typeof request.prompt !== 'string') {
+      throw new Error('Image prompts require the local CLI transport; the Amp SDK only accepts text');
+    }
     return execute({
       prompt: request.prompt,
       options: buildAmpSdkOptions(request.options),
@@ -160,12 +168,12 @@ export function buildAmpCliArgs(options: AmpExecutionOptions): string[] {
   return args;
 }
 
-function formatPromptInput(prompt: string, steer: boolean): string {
+function formatPromptInput(prompt: AmpExecutionRequest['prompt'], steer: boolean): string {
   return `${JSON.stringify({
     type: 'user',
     message: {
       role: 'user',
-      content: [{ type: 'text', text: prompt }],
+      content: typeof prompt === 'string' ? [{ type: 'text', text: prompt }] : prompt,
     },
     steer,
   })}\n`;
@@ -357,9 +365,15 @@ export function createCliTransport(
     async *execute({ sessionId, prompt, options, signal, steer }) {
       signal.throwIfAborted();
 
+      // Amp omits images from user echoes; correlate using only their text.
+      const promptText = typeof prompt === 'string' ? prompt : prompt
+        .filter((part) => part.type === 'text')
+        .map((part) => part.text)
+        .join('');
+
       let session = sessions.get(sessionId);
       let inputSteer = steer;
-      if (session?.pendingPromptEchoes.some((pending) => pending.prompt === prompt)) {
+      if (session?.pendingPromptEchoes.some((pending) => pending.prompt === promptText)) {
         await terminateSession(sessionId);
         signal.throwIfAborted();
         session = undefined;
@@ -369,7 +383,7 @@ export function createCliTransport(
       const promptSequence = ++session.nextPromptSequence;
 
       try {
-        session.pendingPromptEchoes.push({ prompt, sequence: promptSequence });
+        session.pendingPromptEchoes.push({ prompt: promptText, sequence: promptSequence });
         try {
           await new Promise<void>((resolve, reject) => {
             session.child.stdin.write(formatPromptInput(prompt, inputSteer), (error) => error ? reject(error) : resolve());

@@ -86,7 +86,7 @@ Run `amp login` before starting amp-acp. The adapter and CLI share the same Amp 
 ## Features
 
 - **Streaming responses** — Amp messages, tool calls, and thinking are streamed in real-time via ACP
-- **Image support** — Handles image content blocks from Amp (base64 and URL)
+- **Image support** — Sends ACP JPEG, PNG, GIF, and WebP images to the local Amp CLI, including image-only messages, resumed sessions, and steering. Handles image content blocks from Amp (base64 and URL).
 - **MCP passthrough** — MCP servers configured in Zed are automatically passed through to Amp
 - **Session configuration** — Choose local or Orb execution, configure permissions (*Default* or *Bypass*), and select discovered built-in or plugin-defined Amp agent modes via ACP config options
 - **`/init` command** — Type `/init` to generate an `AGENTS.md` file for your project
@@ -133,6 +133,8 @@ During `session/load`, prior messages are replayed to the client as `session/upd
 ### Amp execution transport
 
 By default, amp-acp executes the installed Amp CLI directly through its streaming JSON interface. Set `AMP_ACP_TRANSPORT=sdk` to use `@ampcode/sdk` as a compatibility fallback; both transports pass the selected built-in or plugin-defined Amp mode through to Amp.
+
+Image input requires the local CLI transport and an Amp CLI version that supports [streaming image input](https://ampcode.com/docs/cli/streaming-json). Images are sent as base64 content blocks with their MIME types and position relative to the text preserved. The pinned SDK accepts text only, so SDK transport advertises no image-input capability; SDK and Orb sessions reject image blocks with an ACP invalid-parameters error instead of dropping them. Unsupported image MIME types are also rejected before execution starts.
 
 ### Plugin-defined modes
 
