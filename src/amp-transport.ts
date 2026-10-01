@@ -60,8 +60,11 @@ export type AmpPromptContent =
 
 export interface AmpTransport {
   readonly name: 'cli' | 'sdk';
+  /** Preserves execution across cancellation for legacy cancel-then-prompt steering. */
   readonly supportsSteering?: boolean;
   execute(request: AmpExecutionRequest): AsyncIterable<AmpStreamMessage>;
+  /** Inject into the original iterator; false requests cancel-then-prompt fallback. */
+  steer?(request: AmpExecutionRequest): Promise<boolean>;
   closeSession?(sessionId: string): void;
   closeAll?(): void;
 }
@@ -179,6 +182,13 @@ function formatPromptInput(prompt: AmpExecutionRequest['prompt'], steer: boolean
   })}\n`;
 }
 
+function getPromptText(prompt: AmpExecutionRequest['prompt']): string {
+  return typeof prompt === 'string' ? prompt : prompt
+    .filter((part) => part.type === 'text')
+    .map((part) => part.text)
+    .join('');
+}
+
 interface QueuedMessage {
   message: AmpStreamMessage;
   promptSequence?: number;
@@ -262,7 +272,9 @@ function processExitError(
 }
 
 function isPromptEcho(message: AmpStreamMessage, prompt: string): boolean {
-  if (message.type !== 'user' || !Array.isArray(message.message?.content)) return false;
+  if (message.type !== 'user' || message.parent_tool_use_id != null || !Array.isArray(message.message?.content)) return false;
+  if (message.message.content.some((part) => typeof part === 'object' && part !== null &&
+    'type' in part && part.type === 'tool_result')) return false;
   const text = message.message.content
     .filter((part): part is { type: 'text'; text: string } => (
       typeof part === 'object' && part !== null &&
@@ -359,17 +371,45 @@ export function createCliTransport(
     return session;
   };
 
+  const writePrompt = async (
+    session: CliSession,
+    prompt: AmpExecutionRequest['prompt'],
+    text: string,
+    steer: boolean,
+  ): Promise<number> => {
+    const sequence = ++session.nextPromptSequence;
+    session.pendingPromptEchoes.push({ prompt: text, sequence });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        session.child.stdin.write(formatPromptInput(prompt, steer), (error) => error ? reject(error) : resolve());
+      });
+      return sequence;
+    } catch (error) {
+      const index = session.pendingPromptEchoes.findIndex((pending) => pending.sequence === sequence);
+      if (index !== -1) session.pendingPromptEchoes.splice(index, 1);
+      throw error;
+    }
+  };
+
   const transport: AmpTransport = {
     name: 'cli',
     supportsSteering: preserveCancelledProcess,
+    async steer({ sessionId, prompt, signal }) {
+      signal.throwIfAborted();
+      const session = sessions.get(sessionId);
+      if (!session) throw new Error('No active Amp CLI process for steering');
+      const promptText = getPromptText(prompt);
+      // Amp echoes neither request IDs nor image content. An identical pending
+      // echo cannot distinguish an old turn from one superseded by this steer.
+      if (session.pendingPromptEchoes.some((pending) => pending.prompt === promptText)) return false;
+      await writePrompt(session, prompt, promptText, true);
+      return true;
+    },
     async *execute({ sessionId, prompt, options, signal, steer }) {
       signal.throwIfAborted();
 
       // Amp omits images from user echoes; correlate using only their text.
-      const promptText = typeof prompt === 'string' ? prompt : prompt
-        .filter((part) => part.type === 'text')
-        .map((part) => part.text)
-        .join('');
+      const promptText = getPromptText(prompt);
 
       let session = sessions.get(sessionId);
       let inputSteer = steer;
@@ -380,31 +420,23 @@ export function createCliTransport(
         inputSteer = false;
       }
       session ??= startSession(sessionId, options);
-      const promptSequence = ++session.nextPromptSequence;
 
       try {
-        session.pendingPromptEchoes.push({ prompt: promptText, sequence: promptSequence });
-        try {
-          await new Promise<void>((resolve, reject) => {
-            session.child.stdin.write(formatPromptInput(prompt, inputSteer), (error) => error ? reject(error) : resolve());
-          });
-        } catch (error) {
-          const index = session.pendingPromptEchoes.findIndex((pending) => pending.sequence === promptSequence);
-          if (index !== -1) session.pendingPromptEchoes.splice(index, 1);
-          throw error;
-        }
+        const promptSequence = await writePrompt(session, prompt, promptText, inputSteer);
         let promptEchoed = false;
+        let lastEchoedSequence = 0;
         for (;;) {
           const queued = await session.queue.shift(signal);
           const { message } = queued;
-          if (queued.promptSequence === promptSequence) {
+          if (queued.promptSequence !== undefined && queued.promptSequence >= promptSequence) {
             promptEchoed = true;
+            lastEchoedSequence = queued.promptSequence;
           } else if (!promptEchoed) {
             if (message.type === 'system') yield message;
             continue;
           }
           yield message;
-          if (promptEchoed && isPromptComplete(message)) return;
+          if (promptEchoed && lastEchoedSequence === session.nextPromptSequence && isPromptComplete(message)) return;
         }
       } catch (error) {
         if (signal.aborted) {

@@ -211,6 +211,7 @@ export class AmpAcpAgent implements Agent {
         title: 'Amp ACP Agent',
         version: PACKAGE_VERSION,
       },
+      _meta: { midTurnSteering: typeof this.transport.steer === 'function' },
       agentCapabilities: {
         loadSession: true,
         promptCapabilities: { image: this.transport.name === 'cli', embeddedContext: true },
@@ -453,12 +454,6 @@ export class AmpAcpAgent implements Agent {
         throw RequestError.invalidParams(undefined, `Unsupported image format: ${chunk.mimeType}. Amp accepts JPEG, PNG, GIF, and WebP.`);
       }
     }
-    s.cancelled = false;
-    s.active = true;
-    s.modeLocked = true;
-    const steer = s.steerNextPrompt;
-    s.steerNextPrompt = false;
-
     let textInput = '';
     const promptContent: AmpPromptContent[] = [];
     for (const chunk of params.prompt) {
@@ -530,6 +525,28 @@ If there are Cursor rules (in .cursor/rules/ or .cursorrules), Claude rules (CLA
       console.error('[acp] AMP_ACP_CONTINUE_LATEST set; continuing latest thread on this installation');
     }
 
+    if (s.active && !s.controller?.signal.aborted) {
+      if (s.executor !== 'local' || !transport.steer || !s.controller) {
+        throw RequestError.invalidParams(undefined, 'A prompt is already in flight for this session');
+      }
+      const accepted = await transport.steer({
+        sessionId: params.sessionId,
+        prompt: promptContent.length > 0 ? promptContent : textInput,
+        options,
+        signal: s.controller.signal,
+        steer: true,
+      });
+      if (!accepted) {
+        throw RequestError.invalidParams(undefined, 'A prompt with the same echo text is already in flight for this session');
+      }
+      return { stopReason: 'end_turn' };
+    }
+
+    s.cancelled = false;
+    s.active = true;
+    s.modeLocked = true;
+    const steer = s.steerNextPrompt;
+    s.steerNextPrompt = false;
     const controller = new AbortController();
     s.controller = controller;
     if (transport.name === 'cli') s.processStarted = true;
