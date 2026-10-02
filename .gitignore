@@ -5,6 +5,8 @@ node_modules/
 dist/
 dist-test/
 build/
+release/
+__pycache__/
 
 # Debug logs
 npm-debug.log*

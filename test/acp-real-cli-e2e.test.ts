@@ -15,7 +15,7 @@ import path from 'node:path';
 const RUN_LIVE_E2E = process.env.AMP_ACP_LIVE_E2E === '1';
 const BINARY_PATH = path.resolve(__dirname, '../dist/amp-acp-test');
 const REAL_CLI_PATH = process.env.AMP_ACP_REAL_CLI_PATH ?? 'amp';
-const CONTINUATION_TOKEN = 'Kestrel-4179-Cobalt';
+const CONTINUATION_TOKEN = 'Kestrel-4179-Cobalt'; // gitleaks:allow (synthetic conversation marker)
 const liveDescribe = RUN_LIVE_E2E ? describe : describe.skip;
 
 let fixtureDir = '';

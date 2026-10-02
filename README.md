@@ -20,6 +20,10 @@ If your editor does not inherit your shell `PATH`, set `AMP_CLI_PATH` to the abs
 
 ## Installation
 
+### Personal fork release
+
+For the fixes and features maintained in this fork, install a standalone archive from [hxy91819/amp-acp Releases](https://github.com/hxy91819/amp-acp/releases). Linux/macOS x64 and arm64 and Windows x64 packages include the adapter runtime; the Amp CLI is still required. See [download, checksum, installation, and BB configuration instructions](docs/fork-release.md). The options below describe upstream distribution channels.
+
 ### Option 1: Zed ACP Registry (Recommended)
 
 Install Amp directly from Zed's ACP Registry:

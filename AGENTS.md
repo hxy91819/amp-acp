@@ -36,6 +36,7 @@ Canonical documentation:
 - `AGENTS.md` — Architecture, development commands, and repository conventions
 - `docs/mcp-passthrough.md` — MCP configuration behavior and troubleshooting
 - `docs/npm-oidc-trusted-publishing.md` — npm publishing and release authentication
+- `docs/fork-release.md` — Personal-fork binary releases, installation, and rerun semantics; implemented by `.github/workflows/fork-release.yml` and `scripts/fork_release_v1.py`
 
 | Change type | README | Architecture list | Specialized docs |
 |---|---:|---:|---:|
