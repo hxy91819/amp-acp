@@ -296,24 +296,7 @@ export class AmpAcpAgent implements Agent {
       configOptions: buildSessionConfigOptions(session),
     };
 
-    setImmediate(async () => {
-      try {
-        await this.client.sessionUpdate({
-          sessionId,
-          update: {
-            sessionUpdate: 'available_commands_update',
-            availableCommands: [
-              {
-                name: 'init',
-                description: 'Generate an AGENTS.md file for the project',
-              },
-            ],
-          },
-        });
-      } catch (e) {
-        console.error('[acp] failed to send available_commands_update', e);
-      }
-    });
+    this.sendAvailableCommands(sessionId);
 
     return result;
   }
@@ -338,6 +321,7 @@ export class AmpAcpAgent implements Agent {
     const sessionId = `S-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     await this.persistSession(sessionId, fork);
     this.sessions.set(sessionId, fork);
+    this.sendAvailableCommands(sessionId);
     return { sessionId, configOptions: buildSessionConfigOptions(fork) };
   }
 
@@ -373,10 +357,18 @@ export class AmpAcpAgent implements Agent {
       }
     }
 
+    this.sendAvailableCommands(params.sessionId);
+
+    return {
+      configOptions: buildSessionConfigOptions(session),
+    };
+  }
+
+  private sendAvailableCommands(sessionId: string): void {
     setImmediate(async () => {
       try {
         await this.client.sessionUpdate({
-          sessionId: params.sessionId,
+          sessionId,
           update: {
             sessionUpdate: 'available_commands_update',
             availableCommands: [
@@ -391,10 +383,6 @@ export class AmpAcpAgent implements Agent {
         console.error('[acp] failed to send available_commands_update', e);
       }
     });
-
-    return {
-      configOptions: buildSessionConfigOptions(session),
-    };
   }
 
   private async sessionFromMapping(
@@ -531,7 +519,8 @@ If there are Cursor rules (in .cursor/rules/ or .cursorrules), Claude rules (CLA
     if (promptContent.length > 0 && textInput) {
       promptContent.push({ type: 'text', text: textInput });
     }
-    const forkPrefix = !s.threadId && !s.active && s.forkSourceThreadId
+    const steering = s.active && !s.controller?.signal.aborted;
+    const forkPrefix = !s.threadId && !steering && s.forkSourceThreadId
       ? `Use the relevant context from @${s.forkSourceThreadId} for this independent conversation. Read that thread before proceeding with the request below.\n\n`
       : '';
     const input = promptContent.length > 0
@@ -568,7 +557,7 @@ If there are Cursor rules (in .cursor/rules/ or .cursorrules), Claude rules (CLA
       console.error('[acp] AMP_ACP_CONTINUE_LATEST set; continuing latest thread on this installation');
     }
 
-    if (s.active && !s.controller?.signal.aborted) {
+    if (steering) {
       if (s.executor !== 'local' || !transport.steer || !s.controller) {
         throw RequestError.invalidParams(undefined, 'A prompt is already in flight for this session');
       }
