@@ -10,6 +10,8 @@ import {
   type PromptResponse,
   type ResumeSessionRequest,
   type ResumeSessionResponse,
+  type ForkSessionRequest,
+  type ForkSessionResponse,
   type AuthenticateRequest,
   type AuthenticateResponse,
   type CancelNotification,
@@ -133,6 +135,7 @@ function buildSessionConfigOptions(s: Pick<SessionState, 'mode' | 'ampModeKey' |
 
 interface SessionState {
   threadId: string | null;
+  forkSourceThreadId?: string;
   controller: AbortController | null;
   cancelled: boolean;
   steerNextPrompt: boolean;
@@ -222,7 +225,7 @@ export class AmpAcpAgent implements Agent {
         loadSession: true,
         promptCapabilities: { image: this.transport.name === 'cli', embeddedContext: true },
         mcpCapabilities: { http: true, sse: true },
-        sessionCapabilities: { resume: {} },
+        sessionCapabilities: { resume: {}, fork: {} },
         _meta: {
           [THREAD_LIFECYCLE_CAPABILITY]: {
             version: 1,
@@ -315,6 +318,29 @@ export class AmpAcpAgent implements Agent {
     return result;
   }
 
+  async unstable_forkSession(params: ForkSessionRequest): Promise<ForkSessionResponse> {
+    const active = this.sessions.get(params.sessionId);
+    const mapping = active ? null : await this.threadStore.load(params.sessionId);
+    const source = active ?? (mapping ? await this.sessionFromMapping(mapping, params) : null);
+    const sourceThreadId = source?.threadId ?? source?.forkSourceThreadId;
+    if (!source || !sourceThreadId) {
+      throw RequestError.invalidParams(undefined, `No Amp thread context for ACP session ${params.sessionId}`);
+    }
+    const fork = await this.sessionFromMapping({
+      sessionId: params.sessionId,
+      threadId: null,
+      forkSourceThreadId: sourceThreadId,
+      mode: source.mode,
+      model: source.ampModeKey,
+      executor: source.executor,
+      cwd: source.cwd,
+    }, params);
+    const sessionId = `S-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    await this.persistSession(sessionId, fork);
+    this.sessions.set(sessionId, fork);
+    return { sessionId, configOptions: buildSessionConfigOptions(fork) };
+  }
+
   async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
     let session = this.sessions.get(params.sessionId);
 
@@ -373,7 +399,7 @@ export class AmpAcpAgent implements Agent {
 
   private async sessionFromMapping(
     mapping: AmpThreadMapping,
-    params: ResumeSessionRequest | LoadSessionRequest,
+    params: ResumeSessionRequest | LoadSessionRequest | ForkSessionRequest,
   ): Promise<SessionState> {
     const cwd = params.cwd || mapping.cwd || process.cwd();
     const modeCatalog = await this.modeCatalog(cwd);
@@ -394,6 +420,7 @@ export class AmpAcpAgent implements Agent {
       ?? (modeCatalog.modes.find((mode) => mode.key === 'medium') ?? modeCatalog.modes[0]!).key;
     return {
       threadId: mapping.threadId,
+      forkSourceThreadId: mapping.forkSourceThreadId,
       controller: null,
       cancelled: false,
       steerNextPrompt: false,
@@ -403,7 +430,7 @@ export class AmpAcpAgent implements Agent {
       ampModeKey,
       ampModes: modeCatalog.modes,
       modeDiscoveryDiagnostic: modeCatalog.diagnostic,
-      modeLocked: true,
+      modeLocked: mapping.threadId !== null,
       executor: mapping.executor && isExecutor(mapping.executor) ? mapping.executor : 'local',
       mcpConfig: convertAcpMcpServersToAmpConfig(params.mcpServers),
       cwd,
@@ -411,10 +438,11 @@ export class AmpAcpAgent implements Agent {
   }
 
   private async persistSession(sessionId: string, s: SessionState): Promise<void> {
-    if (!s.threadId) return;
+    if (!s.threadId && !s.forkSourceThreadId) return;
     await this.threadStore.save({
       sessionId,
       threadId: s.threadId,
+      forkSourceThreadId: s.forkSourceThreadId,
       mode: s.mode,
       model: s.ampModeKey,
       executor: s.executor,
@@ -503,7 +531,12 @@ If there are Cursor rules (in .cursor/rules/ or .cursorrules), Claude rules (CLA
     if (promptContent.length > 0 && textInput) {
       promptContent.push({ type: 'text', text: textInput });
     }
-    const input = promptContent.length > 0 ? promptContent : textInput;
+    const forkPrefix = !s.threadId && !s.active && s.forkSourceThreadId
+      ? `Use the relevant context from @${s.forkSourceThreadId} for this independent conversation. Read that thread before proceeding with the request below.\n\n`
+      : '';
+    const input = promptContent.length > 0
+      ? (forkPrefix ? [{ type: 'text' as const, text: forkPrefix }, ...promptContent] : promptContent)
+      : forkPrefix + textInput;
     const ampPrompt = s.executor === 'local' && transport.name === 'cli'
       ? prepareCliPrompt(input, this.imageDirectory)
       : input;
@@ -530,7 +563,7 @@ If there are Cursor rules (in .cursor/rules/ or .cursorrules), Claude rules (CLA
 
     if (s.threadId) {
       options.continue = s.threadId;
-    } else if (process.env.AMP_ACP_CONTINUE_LATEST) {
+    } else if (!s.forkSourceThreadId && process.env.AMP_ACP_CONTINUE_LATEST) {
       options.continue = true;
       console.error('[acp] AMP_ACP_CONTINUE_LATEST set; continuing latest thread on this installation');
     }
@@ -585,6 +618,11 @@ If there are Cursor rules (in .cursor/rules/ or .cursorrules), Claude rules (CLA
 
         if (message.type === 'assistant' || message.type === 'user') {
           for (const n of toAcpNotifications(message, params.sessionId)) {
+            if (forkPrefix && n.update.sessionUpdate === 'user_message_chunk' && n.update.content.type === 'text'
+              && n.update.content.text.startsWith(forkPrefix)) {
+              n.update.content.text = n.update.content.text.slice(forkPrefix.length);
+              if (!n.update.content.text) continue;
+            }
             try {
               await this.client.sessionUpdate(n);
             } catch (e) {

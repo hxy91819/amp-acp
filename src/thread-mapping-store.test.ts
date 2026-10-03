@@ -29,6 +29,30 @@ describe('FileThreadMappingStore', () => {
     });
   });
 
+  it('retains idle-fork sources without assigning the parent as the new thread', async () => {
+    const store = new FileThreadMappingStore(stateDir);
+    await store.save({ sessionId, threadId: null, forkSourceThreadId: threadId });
+    expect(await new FileThreadMappingStore(stateDir).load(sessionId)).toEqual({
+      sessionId, threadId: null, forkSourceThreadId: threadId,
+    });
+  });
+
+  it('rejects null threads without a valid fork source and malformed persisted sources', async () => {
+    const store = new FileThreadMappingStore(stateDir);
+    await expect(store.save({ sessionId, threadId: null })).rejects.toThrow('Invalid Amp thread ID');
+    await expect(store.save({ sessionId, threadId, forkSourceThreadId: '../thread' }))
+      .rejects.toThrow('Invalid fork source');
+    await store.save({ sessionId, threadId });
+    for (const bad of [
+      { sessionId, threadId: null },
+      { sessionId, threadId: null, forkSourceThreadId: 'bad' },
+      { sessionId, threadId, forkSourceThreadId: 42 },
+    ]) {
+      await writeFile(path.join(stateDir, 'sessions', `${sessionId}.json`), JSON.stringify(bad));
+      await expect(store.load(sessionId)).rejects.toThrow('Invalid persisted mapping');
+    }
+  });
+
   it('returns null for a legacy session with no persisted mapping', async () => {
     const store = new FileThreadMappingStore(stateDir);
 
