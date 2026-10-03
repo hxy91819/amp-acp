@@ -17,9 +17,9 @@ let updates: SessionNotification[];
 let failNext: boolean;
 let continueLatest: string | undefined;
 
-function connect(transportName: 'cli' | 'sdk' = 'cli') {
+function connect(transportName: 'cli' | 'sdk' = 'cli', overrideTransport?: AmpTransport) {
   const threads = new Map<string, string>();
-  const transport: AmpTransport = {
+  const transport: AmpTransport = overrideTransport ?? {
     name: transportName,
     async *execute(request) {
       requests.push(request);
@@ -114,6 +114,51 @@ describe('ACP context forks', () => {
     await resumed.resumeSession({ sessionId: sourceSessionId, cwd: '/tmp/source', mcpServers: [] });
     await resumed.prompt({ sessionId: sourceSessionId, prompt: [{ type: 'text', text: 'original' }] });
     expect(requests[2]?.options.continue).toBe(sourceThreadId);
+  });
+
+  it('advertises /init on the newly forked session', async () => {
+    const client = connect();
+    const fork = await client.unstable_forkSession({ sessionId: sourceSessionId, cwd: '/tmp/fork', mcpServers: [] });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(updates.find((notification) => notification.sessionId === fork.sessionId
+      && notification.update.sessionUpdate === 'available_commands_update')?.update)
+      .toMatchObject({ availableCommands: [{ name: 'init' }] });
+  });
+
+  it('retains the source reference when retrying before cancelled execution has finished', async () => {
+    const started = Promise.withResolvers<void>();
+    const aborted = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const transport: AmpTransport = {
+      name: 'cli',
+      async *execute(request) {
+        requests.push(request);
+        if (requests.length === 1) {
+          request.signal.addEventListener('abort', () => aborted.resolve(), { once: true });
+          started.resolve();
+          await release.promise;
+          return;
+        }
+        yield { type: 'system', session_id: `T-${randomUUID()}` };
+        yield { type: 'assistant', message: { content: [{ type: 'text', text: 'retried' }] } };
+      },
+    };
+    const client = connect('cli', transport);
+    const fork = await client.unstable_forkSession({ sessionId: sourceSessionId, cwd: '/tmp/fork', mcpServers: [] });
+    const first = client.prompt({ sessionId: fork.sessionId, prompt: [{ type: 'text', text: 'first' }] });
+    try {
+      await started.promise;
+      await client.cancel({ sessionId: fork.sessionId });
+      await aborted.promise;
+      const retried = await client.prompt({ sessionId: fork.sessionId, prompt: [{ type: 'text', text: 'retry' }] });
+      expect(retried.stopReason).toBe('end_turn');
+      expect(requests[1]?.options.continue).toBeUndefined();
+      expect(requests[1]?.prompt).toContain(`@${sourceThreadId}`);
+      expect(requests[1]?.prompt).toContain('retry');
+    } finally {
+      release.resolve();
+      expect((await first).stopReason).toBe('cancelled');
+    }
   });
 
   it('preserves image input order and the reference after a pre-creation failure', async () => {
