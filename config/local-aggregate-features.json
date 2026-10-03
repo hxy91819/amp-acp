@@ -103,6 +103,18 @@
       "relatedIssues": [],
       "disposition": "internal",
       "reason": "Preserve oversized local CLI image inputs as durable original-byte file references; report pre-echo CLI errors and protect replacement processes during cancelled error cleanup. No upstream ticket has been filed."
+    },
+    {
+      "branch": "feature/amp-context-fork",
+      "lastPackaged": {
+        "sourceCommit": "170932c3783c3de6f3476d2b5987f3b68fb3f014",
+        "aggregateCommit": "e7cd353fe71906785ddfbc6b6b84d5db36e8fb13"
+      },
+      "specIssue": null,
+      "upstreamFeedback": [],
+      "relatedIssues": [],
+      "disposition": "internal",
+      "reason": "Durable ACP context forks create independent Amp threads and reference the source thread on their first prompt. Idle forks survive restarts; cancellation retries preserve the reference. BB custom agents opt into tip forks through the separately verified feature/acp-custom-fork branch. No upstream ticket has been filed."
     }
   ]
 }
