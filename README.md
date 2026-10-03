@@ -91,15 +91,24 @@ Run `amp login` before starting amp-acp. The adapter and CLI share the same Amp 
 - **Session configuration** — Choose local or Orb execution, configure permissions (*Default* or *Bypass*), and select discovered built-in or plugin-defined Amp agent modes via ACP config options
 - **`/init` command** — Type `/init` to generate an `AGENTS.md` file for your project
 - **Conversation continuity** — Thread context is preserved across multiple prompts within a session
+- **Context forks** — `session/fork` creates an independent session that references the original Amp thread on its first prompt; idle forks survive adapter restarts
 - **Session resume** — `session/load` reattaches to the underlying Amp thread after amp-acp restarts, so ACP clients can reopen earlier sessions
 - **Native thread lifecycle** — ACP clients can persist Amp's durable thread ID and archive or unarchive that exact thread
 - **Native steering** — Local CLI sessions accept additional ACP prompts during an active turn and send them directly to Amp as steer instructions; BB records these messages as **Steer**
+
+### Forking in bb
+
+Amp has retired its native fork command. This adapter implements ACP `session/fork` by creating a new session and prepending a reference to the source Amp thread to its first prompt. Amp reads relevant context from that thread; this does not copy the complete model history or freeze a historical checkpoint. The reference is read at prompt time, so later source updates may be visible. Images and the original prompt order are preserved.
+
+A fork inherits the source permission mode, Amp mode, and execution environment, and uses the client's requested working directory and MCP servers. Its Amp thread is created only when the first prompt runs. Idle forks can be loaded or resumed after an adapter restart, and never fall back to `AMP_ACP_CONTINUE_LATEST`. Forking an idle fork retains its original source reference. A normal source session must have created its Amp thread before it can be forked. Native metadata and archival always refer to the fork's own thread, never its source.
+
+In bb versions that accept `fork` in the ACP providers plugin's `customAgents` setting, add `"fork": "tip"` to the existing amp-acp agent entry. The UI fork action and `bb thread fork <thread-id>` then use this capability. bb verifies that the launched adapter advertises `session/fork`; ACP forks currently support the conversation tip only. Update the existing custom agent list rather than replacing other entries.
 
 ### Native Amp thread lifecycle extension
 
 Amp's streamed `session_id` is a durable `T-...` thread ID, distinct from amp-acp's `S-...` ACP session ID. amp-acp persists that exact mapping under `$XDG_STATE_HOME/amp-acp/sessions` (or `$AMP_ACP_STATE_DIR/sessions`) so `session/resume`, `session/load`, and native archival remain safe after adapter restarts. It never reconstructs the relationship from a working directory, title, timestamp, or thread listing.
 
-Mappings are small JSON records written atomically to an owner-only state directory (`0700`) with owner-only files (`0600`). They contain the ACP session ID, Amp thread ID, and the session's permission mode, Amp mode, and working directory — never prompts, responses, or credentials.
+Mappings are small JSON records written atomically to an owner-only state directory (`0700`) with owner-only files (`0600`). They contain the ACP session ID, Amp thread ID, and the session's permission mode, Amp mode, execution environment, and working directory; context forks also retain their source thread ID — never prompts, responses, or credentials.
 
 Compatible ACP clients can detect protocol revision 1 at `agentCapabilities._meta["amp-acp/thread-lifecycle"]` and use these custom methods:
 

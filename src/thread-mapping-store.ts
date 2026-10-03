@@ -8,7 +8,9 @@ const ACP_SESSION_ID_PATTERN = /^S-[a-z0-9]+-[a-z0-9]{6}$/i;
 
 export interface AmpThreadMapping {
   sessionId: string;
-  threadId: string;
+  threadId: string | null;
+  /** Source referenced when a context fork sends its first prompt. */
+  forkSourceThreadId?: string;
   /** Last selected ACP permission mode, if persisted. */
   mode?: string;
   /** Last selected Amp mode, if persisted. */
@@ -37,7 +39,8 @@ function validateMapping(value: unknown, expectedSessionId: string): AmpThreadMa
   const mapping = value as Record<string, unknown>;
   if (
     mapping.sessionId !== expectedSessionId
-    || !isAmpThreadId(mapping.threadId)
+    || !(isAmpThreadId(mapping.threadId) || (mapping.threadId === null && isAmpThreadId(mapping.forkSourceThreadId)))
+    || (mapping.forkSourceThreadId !== undefined && !isAmpThreadId(mapping.forkSourceThreadId))
   ) {
     throw new Error(`Invalid persisted mapping for ACP session ${expectedSessionId}`);
   }
@@ -45,6 +48,7 @@ function validateMapping(value: unknown, expectedSessionId: string): AmpThreadMa
     sessionId: expectedSessionId,
     threadId: mapping.threadId,
   };
+  if (isAmpThreadId(mapping.forkSourceThreadId)) result.forkSourceThreadId = mapping.forkSourceThreadId;
   for (const field of ['mode', 'model', 'executor', 'cwd'] as const) {
     const fieldValue = mapping[field];
     if (fieldValue === undefined) continue;
@@ -82,8 +86,11 @@ export class FileThreadMappingStore implements ThreadMappingStore {
 
   async save(mapping: AmpThreadMapping): Promise<void> {
     assertAcpSessionId(mapping.sessionId);
-    if (!isAmpThreadId(mapping.threadId)) {
+    if (!(isAmpThreadId(mapping.threadId) || (mapping.threadId === null && isAmpThreadId(mapping.forkSourceThreadId)))) {
       throw new Error(`Invalid Amp thread ID: ${mapping.threadId}`);
+    }
+    if (mapping.forkSourceThreadId !== undefined && !isAmpThreadId(mapping.forkSourceThreadId)) {
+      throw new Error(`Invalid fork source Amp thread ID: ${mapping.forkSourceThreadId}`);
     }
     await mkdir(this.sessionsDir, { recursive: true, mode: 0o700 });
     const destination = this.mappingPath(mapping.sessionId);
