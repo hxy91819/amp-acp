@@ -102,7 +102,7 @@ Amp has retired its native fork command. This adapter implements ACP `session/fo
 
 A fork inherits the source permission mode, Amp mode, and execution environment, and uses the client's requested working directory and MCP servers. Its Amp thread is created only when the first prompt runs. Idle forks can be loaded or resumed after an adapter restart, and never fall back to `AMP_ACP_CONTINUE_LATEST`. Forking an idle fork retains its original source reference. A normal source session must have created its Amp thread before it can be forked. Native metadata and archival always refer to the fork's own thread, never its source.
 
-In bb versions that accept `fork` in the ACP providers plugin's `customAgents` setting, add `"fork": "tip"` to the existing amp-acp agent entry. The UI fork action and `bb thread fork <thread-id>` then use this capability. bb verifies that the launched adapter advertises `session/fork`; ACP forks currently support the conversation tip only. Update the existing custom agent list rather than replacing other entries.
+In bb versions with automatic ACP fork discovery, the existing amp-acp custom agent entry needs no extra fork configuration. bb detects the adapter's `session/fork` capability on connected hosts and enables the UI fork action and `bb thread fork <thread-id>`. If an adapter was upgraded without changing its launch, reload the ACP providers plugin to refresh discovery. An explicit `"fork": "none"` keeps forks disabled. bb verifies the launched adapter again when executing a fork; ACP forks currently support the conversation tip only.
 
 ### Native Amp thread lifecycle extension
 
