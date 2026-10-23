@@ -31,7 +31,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   const attempt = readFileSync(log, 'utf8').trim().split('\\n').length;
   emit({ type: 'system', subtype: 'init', session_id: '${threadId}' });
   const fail = () => {
-    emit({ type: 'result', is_error: true, error: scenario === 'auth' ? 'Unauthorized: login required' : scenario === 'parameter' ? 'Invalid model parameter' : '${transient}' });
+    emit({ type: 'result', is_error: true, error: scenario === 'auth' ? 'Unauthorized: login required' : scenario === 'parameter' ? 'Invalid model parameter' : scenario === 'subscription' ? 'HTTP 429: model subscription expired' : '${transient}' });
     process.exit(0);
   };
   if (scenario === 'pre-echo') { fail(); return; }
@@ -46,7 +46,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     emit({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'once', name: 'Bash', input: { cmd: 'one side effect' } }], stop_reason: 'tool_use' } });
   }
   if (scenario === 'accepted-steer' && input.steer) { fail(); return; }
-  if (scenario === 'always' || scenario === 'auth' || scenario === 'parameter' || attempt === 1) { fail(); return; }
+  if (scenario === 'always' || scenario === 'auth' || scenario === 'parameter' || scenario === 'subscription' || attempt === 1) { fail(); return; }
   emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'recovered' }], stop_reason: 'end_turn' } });
 });
 `);
@@ -90,9 +90,9 @@ describe('CLI prompt recovery', () => {
     expect(await inputs()).toHaveLength(3);
   });
 
-  it.each(['auth', 'parameter', 'pre-echo', 'exit-zero'])('does not replay ambiguous or non-transient failures: %s', async (scenario) => {
+  it.each(['auth', 'parameter', 'subscription', 'pre-echo', 'exit-zero'])('does not replay ambiguous or non-transient failures: %s', async (scenario) => {
     const { transport, request, inputs } = setup(scenario);
-    await expect(collect(transport.execute(request))).rejects.toThrow(scenario === 'auth' ? 'Unauthorized' : scenario === 'parameter' ? 'Invalid model parameter' : scenario === 'pre-echo' ? transient : 'exited with code 0');
+    await expect(collect(transport.execute(request))).rejects.toThrow(scenario === 'auth' ? 'Unauthorized' : scenario === 'parameter' ? 'Invalid model parameter' : scenario === 'subscription' ? 'model subscription expired' : scenario === 'pre-echo' ? transient : 'exited with code 0');
     expect(await inputs()).toHaveLength(1);
   });
 

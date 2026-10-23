@@ -313,7 +313,7 @@ function defaultRetryPolicy(): AmpRetryPolicy {
 }
 
 function isTransientFailure(error: string): boolean {
-  if (/unauthorized|forbidden|auth|login|invalid.?api.?key|insufficient|quota|credits|balance/i.test(error)) return false;
+  if (/unauthorized|forbidden|auth|login|invalid.?api.?key|insufficient|quota|credits|balance|subscription.*(?:expired|inactive|cancelled|canceled|not active|invalid|missing|required)|(?:expired|inactive|invalid|missing) (?:model )?subscription/i.test(error)) return false;
   return /WebSocket closed:\s*(1006|1011|1012|1013)\b|\b(ECONNRESET|ETIMEDOUT|EAI_AGAIN)\b|\b(?:HTTP|status(?: code)?)[ :]+(?:408|429|500|502|503|504)\b/i.test(error);
 }
 
