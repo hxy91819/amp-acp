@@ -1,4 +1,6 @@
 import { execute, type AmpOptions } from '@ampcode/sdk';
+import { createHash, randomUUID } from 'node:crypto';
+import { createRetryLogger, type FailureKind, type RetryDiagnostic, type RetryLogger, type RetryStopReason } from './retry-diagnostics.js';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { formatPromptInput } from './cli-prompt.js';
@@ -312,9 +314,27 @@ function defaultRetryPolicy(): AmpRetryPolicy {
   return { maxRetries, delayMs: 30000, maxDelayMs: 300000, maxDurationMs: windowSeconds * 1000 };
 }
 
-function isTransientFailure(error: string): boolean {
-  if (/unauthorized|forbidden|auth|login|invalid.?api.?key|insufficient|quota|credits|balance|subscription.*(?:expired|inactive|cancelled|canceled|not active|invalid|missing|required)|(?:expired|inactive|invalid|missing) (?:model )?subscription/i.test(error)) return false;
-  return /WebSocket closed:\s*(1006|1011|1012|1013)\b|\b(ECONNRESET|ETIMEDOUT|EAI_AGAIN)\b|\b(?:HTTP|status(?: code)?)[ :]+(?:408|429|500|502|503|504)\b/i.test(error);
+function hasAssistantProgress(message: AmpStreamMessage): boolean {
+  if (message.type !== 'assistant' || message.parent_tool_use_id != null) return false;
+  const content = message.message?.content;
+  if (typeof content === 'string') return content.trim().length > 0;
+  return Array.isArray(content) && content.some((part: unknown) => {
+    if (!part || typeof part !== 'object' || !('type' in part)) return false;
+    if (part.type === 'tool_use') return true;
+    return (part.type === 'text' && 'text' in part && typeof part.text === 'string' && part.text.trim().length > 0)
+      || (part.type === 'thinking' && 'thinking' in part && typeof part.thinking === 'string' && part.thinking.trim().length > 0);
+  });
+}
+
+function classifyFailure(error: string): FailureKind {
+  if (/server_is_overloaded|overloaded|overloaded_error|resource_exhausted/i.test(error)) return 'overloaded';
+  if (/unauthorized|forbidden|auth|login|api.?key/i.test(error)) return 'authentication';
+  if (/subscription|insufficient|quota|credits|balance/i.test(error)) return 'subscription';
+  if (/rate.?limit|HTTP[: ]+429/i.test(error)) return 'rate_limit';
+  if (/WebSocket|ECONNRESET|ETIMEDOUT|EAI_AGAIN|connection/i.test(error)) return 'connection';
+  if (/process.*(?:exited|killed)|EPIPE|ENOENT/i.test(error)) return 'process_exit';
+  if (/parse JSON|protocol/i.test(error)) return 'protocol';
+  return 'unknown';
 }
 
 const RECOVERY_PROMPT = 'Continue the interrupted turn from the existing thread context. Check completed tool results first and continue only unfinished work; do not repeat completed actions.';
@@ -324,17 +344,18 @@ export function createCliTransport(
   commandArgs: string[] = [],
   preserveCancelledProcess = process.env.AMP_ACP_CANCEL_MODE === 'steer',
   retryPolicy: AmpRetryPolicy = defaultRetryPolicy(),
+  diagnostics: RetryLogger = createRetryLogger(),
 ): AmpTransport {
   const executions = new Map<string, AbortController>();
   const sessions = new Map<string, CliSession>();
 
-  const terminateSession = (sessionId: string): Promise<void> => {
+  const terminateSession = (sessionId: string, force = false): Promise<void> => {
     const session = sessions.get(sessionId);
     if (!session) return Promise.resolve();
     sessions.delete(sessionId);
     if (session.child.exitCode !== null || session.child.signalCode !== null) return Promise.resolve();
     const closed = new Promise<void>((resolve) => session.child.once('close', () => resolve()));
-    session.child.kill(process.platform === 'win32' ? 'SIGKILL' : 'SIGTERM');
+    session.child.kill(force || process.platform === 'win32' ? 'SIGKILL' : 'SIGTERM');
     return closed;
   };
 
@@ -446,11 +467,40 @@ export function createCliTransport(
       let currentOptions = options;
       let inputSteer = steer;
       let recoveryStartedAt: number | undefined;
+      let lastFailureDetail: string | undefined;
       const maxDurationMs = Math.min(retryPolicy.maxDurationMs ?? MAX_RETRY_WINDOW_MS, MAX_RETRY_WINDOW_MS);
+      const executionId = randomUUID();
+      const executionStartedAt = performance.now();
+      let attempt = 0;
+      let outcomeLogged = false;
+      const log = (event: RetryDiagnostic['event'], details: Partial<RetryDiagnostic> = {}): void => {
+        diagnostics({
+          event, executionId, sessionId: /^S-[a-z0-9]+-[a-z0-9]{6}$/i.test(sessionId) ? sessionId : undefined,
+          ampThreadId: recoveryThreadId, attempt, elapsedMs: Math.round(performance.now() - executionStartedAt),
+          recoveryElapsedMs: recoveryStartedAt === undefined ? undefined : Math.round(performance.now() - recoveryStartedAt),
+          ...details,
+        });
+      };
+      const stop = (reason: RetryStopReason): void => {
+        outcomeLogged = true;
+        log('stopped', { reason });
+      };
+      log('execution_started', { maxRetries: retryPolicy.maxRetries, maxWindowMs: maxDurationMs });
 
       try {
-        for (let attempt = 0; ; attempt++) {
+        for (; ; attempt++) {
           signal.throwIfAborted();
+          let awaitingRecoveryOutput = attempt > 0;
+          let recoveryDeadline: AbortSignal | undefined;
+          if (awaitingRecoveryOutput) {
+            const remainingMs = maxDurationMs - (performance.now() - recoveryStartedAt!);
+            if (remainingMs <= 0) {
+              stop('window_expired');
+              throw new Error(`${lastFailureDetail ?? 'Amp CLI recovery failed'} (automatic retry window exhausted)`);
+            }
+            recoveryDeadline = AbortSignal.timeout(Math.max(1, Math.ceil(remainingMs)));
+          }
+          const recoveryWaitSignal = recoveryDeadline ? AbortSignal.any([signal, recoveryDeadline]) : signal;
           const promptText = getPromptText(currentPrompt);
           let session = sessions.get(sessionId);
           if (session?.pendingPromptEchoes.some((pending) => pending.prompt === promptText)) {
@@ -458,43 +508,43 @@ export function createCliTransport(
             signal.throwIfAborted();
             session = undefined;
           }
-          // A replacement process starts with an ordinary prompt, never a steer.
           if (!session) inputSteer = false;
           session ??= startSession(sessionId, currentOptions);
+          if (attempt > 0) log('retry_started');
           let retryError: string | undefined;
+          let failedResult: AmpStreamMessage | undefined;
+          let promptEchoed = false;
+          let lastEchoedSequence = 0;
           try {
             const promptSequence = await writePrompt(session, currentPrompt, promptText, inputSteer);
-            let promptEchoed = false;
-            let lastEchoedSequence = 0;
             for (;;) {
-              const { message, promptSequence: echoedSequence } = await session.queue.shift(signal);
+              const { message, promptSequence: echoedSequence } = await session.queue.shift(awaitingRecoveryOutput ? recoveryWaitSignal : signal);
+              if (awaitingRecoveryOutput && performance.now() - recoveryStartedAt! >= maxDurationMs) {
+                throw new Error('automatic retry window exhausted');
+              }
               if (message.session_id && isAmpThreadId(message.session_id)) recoveryThreadId = message.session_id;
               if (echoedSequence !== undefined && echoedSequence >= promptSequence) {
                 promptEchoed = true;
                 lastEchoedSequence = echoedSequence;
               }
               if (message.type === 'result' && message.is_error) {
-                const error = message.error ?? 'Amp CLI execution failed';
-                const transient = isTransientFailure(error);
-                if (transient) recoveryStartedAt ??= performance.now();
-                const withinWindow = recoveryStartedAt !== undefined && performance.now() - recoveryStartedAt < maxDurationMs;
-                const canRetry = attempt < retryPolicy.maxRetries && recoveryThreadId && promptEchoed
-                  && lastEchoedSequence === session.nextPromptSequence && transient && withinWindow;
-                if (sessions.get(sessionId) === session) await terminateSession(sessionId);
-                signal.throwIfAborted();
-                if (!canRetry) {
-                  yield message;
-                  throw new Error(error);
-                }
-                retryError = error;
-                break;
+                failedResult = message;
+                throw new Error(message.error ?? 'Amp CLI execution failed');
               }
               if (!promptEchoed) {
                 if (message.type === 'system') yield message;
                 continue;
               }
+              if (awaitingRecoveryOutput && hasAssistantProgress(message)) {
+                awaitingRecoveryOutput = false;
+                log('recovery_resumed');
+              }
               yield message;
-              if (lastEchoedSequence === session.nextPromptSequence && isPromptComplete(message)) return;
+              if (lastEchoedSequence === session.nextPromptSequence && isPromptComplete(message)) {
+                outcomeLogged = true;
+                log(attempt > 0 ? 'recovered' : 'completed');
+                return;
+              }
             }
           } catch (error) {
             if (signal.aborted) {
@@ -503,16 +553,44 @@ export function createCliTransport(
               }
               throw abortedError();
             }
-            throw error;
+            if (awaitingRecoveryOutput && (recoveryDeadline?.aborted || performance.now() - recoveryStartedAt! >= maxDurationMs)) {
+              if (sessions.get(sessionId) === session) await terminateSession(sessionId, true);
+              stop('window_expired');
+              throw new Error(`${lastFailureDetail ?? 'Amp CLI recovery failed'} (automatic retry window exhausted)`);
+            }
+            const detail = error instanceof Error ? error.message : String(error);
+            lastFailureDetail = detail;
+            recoveryStartedAt ??= performance.now();
+            const reason: RetryStopReason = !recoveryThreadId ? 'thread_unknown'
+              : !promptEchoed ? 'input_unacknowledged'
+              : lastEchoedSequence !== session.nextPromptSequence ? 'steer_unacknowledged'
+              : attempt >= retryPolicy.maxRetries ? 'max_retries'
+              : performance.now() - recoveryStartedAt >= maxDurationMs ? 'window_expired' : 'retry';
+            log('failure', {
+              reason, failureKind: classifyFailure(detail), failureFingerprint: createHash('sha256').update(detail).digest('hex').slice(0, 16),
+              promptAcknowledged: promptEchoed, pendingInputs: session.pendingPromptEchoes.length,
+            });
+            if (sessions.get(sessionId) === session) await terminateSession(sessionId);
+            signal.throwIfAborted();
+            if (reason !== 'retry') {
+              stop(reason);
+              if (failedResult) yield failedResult;
+              throw error;
+            }
+            retryError = detail;
           }
-          if (retryError) {
+          if (retryError !== undefined) {
             const remainingMs = maxDurationMs - (performance.now() - recoveryStartedAt!);
-            if (remainingMs <= 0) throw new Error(retryError);
+            if (remainingMs <= 0) {
+              stop('window_expired');
+              throw new Error(retryError);
+            }
             const delayMs = Math.min(retryPolicy.delayMs * 2 ** attempt, retryPolicy.maxDelayMs ?? 300000, remainingMs);
-            console.error(`[amp] transient model failure; retry ${attempt + 1}/${retryPolicy.maxRetries} in ${delayMs}ms`);
+            log('retry_scheduled', { attempt: attempt + 1, delayMs, remainingMs, nextRetryAt: new Date(Date.now() + delayMs).toISOString() });
             yield { type: 'system', subtype: 'retry', retry: { attempt: attempt + 1, maxRetries: retryPolicy.maxRetries, delayMs } };
             await delay(delayMs, undefined, { signal });
             if (delayMs === remainingMs || performance.now() - recoveryStartedAt! >= maxDurationMs) {
+              stop('window_expired');
               throw new Error(`${retryError} (automatic retry window exhausted)`);
             }
             currentPrompt = RECOVERY_PROMPT;
@@ -521,6 +599,10 @@ export function createCliTransport(
           }
         }
       } finally {
+        if (!outcomeLogged) {
+          if (signal.aborted) log('cancelled', { reason: lifecycle.signal.aborted ? 'connection_closed' : 'cancelled' });
+          else log('stopped', { reason: 'consumer_closed' });
+        }
         if (executions.get(sessionId) === lifecycle) executions.delete(sessionId);
       }
     },

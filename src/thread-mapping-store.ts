@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { homedir } from 'node:os';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { isAmpThreadId } from './amp-transport.js';
+import { defaultAmpAcpStateDir } from './state-directory.js';
+export { defaultAmpAcpStateDir } from './state-directory.js';
 
 const ACP_SESSION_ID_PATTERN = /^S-[a-z0-9]+-[a-z0-9]{6}$/i;
 
@@ -60,11 +61,6 @@ function validateMapping(value: unknown, expectedSessionId: string): AmpThreadMa
   return result;
 }
 
-export function defaultAmpAcpStateDir(): string {
-  if (process.env.AMP_ACP_STATE_DIR) return process.env.AMP_ACP_STATE_DIR;
-  const stateHome = process.env.XDG_STATE_HOME ?? path.join(homedir(), '.local', 'state');
-  return path.join(stateHome, 'amp-acp');
-}
 
 export class FileThreadMappingStore implements ThreadMappingStore {
   private sessionsDir: string;

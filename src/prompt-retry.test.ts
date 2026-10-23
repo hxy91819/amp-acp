@@ -6,10 +6,12 @@ import { AgentSideConnection, ClientSideConnection, ndJsonStream, type SessionNo
 import { AmpAcpAgent } from './server.js';
 import { BUILTIN_AMP_MODES } from './amp-modes.js';
 import { FileThreadMappingStore } from './thread-mapping-store.js';
+import type { RetryDiagnostic } from './retry-diagnostics.js';
 import { createCliTransport, type AmpStreamMessage, type AmpTransport, type AmpRetryPolicy } from './amp-transport.js';
 
 const threadId = 'T-01a03c00-e608-7007-8181-5c1cc56757be';
 const transient = 'OpenAI WebSocket closed: 1006';
+const overload = 'OpenAI stream error (server_is_overloaded): Our servers are currently overloaded. Please try again later. If this persists, deactivate your ChatGPT subscription: https://ampcode.com/settings/model-routing';
 let directory: string;
 let fixture: string;
 let sequence = 0;
@@ -31,13 +33,14 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   const attempt = readFileSync(log, 'utf8').trim().split('\\n').length;
   emit({ type: 'system', subtype: 'init', session_id: '${threadId}' });
   const fail = () => {
-    emit({ type: 'result', is_error: true, error: scenario === 'auth' ? 'Unauthorized: login required' : scenario === 'parameter' ? 'Invalid model parameter' : scenario === 'subscription' ? 'HTTP 429: model subscription expired' : '${transient}' });
+    emit({ type: 'result', is_error: true, error: scenario === 'auth' ? 'Unauthorized: login required' : scenario === 'parameter' ? 'Invalid model parameter' : scenario === 'subscription' ? 'HTTP 429: model subscription expired' : scenario === 'empty-error' ? '' : scenario === 'overload' ? '${overload}' : scenario === 'unknown' ? 'Unexpected upstream response: PRIVATE_ERROR_SENTINEL' : '${transient}' });
     process.exit(0);
   };
   if (scenario === 'pre-echo') { fail(); return; }
   if (scenario === 'exit-zero') { process.exit(0); }
   if (scenario === 'pending-steer' && input.steer) { fail(); return; }
   emit({ type: 'user', message: { content: input.message.content } });
+  if (scenario === 'exit-after-echo' && attempt === 1) { process.exit(0); }
   if ((scenario === 'pending-steer' || scenario === 'accepted-steer') && attempt === 1) {
     emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'waiting for steer' }], stop_reason: null } });
     return;
@@ -47,7 +50,17 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   }
   if (scenario === 'accepted-steer' && input.steer) { fail(); return; }
   if (scenario === 'always' || scenario === 'auth' || scenario === 'parameter' || scenario === 'subscription' || attempt === 1) { fail(); return; }
-  emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'recovered' }], stop_reason: 'end_turn' } });
+  const complete = () => emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'recovered' }], stop_reason: 'end_turn' } });
+  if (scenario === 'empty-progress-recovery') {
+    emit({ type: 'assistant', message: { content: [{ type: 'text', text: '' }], stop_reason: null } });
+    setTimeout(complete, 500); return;
+  }
+  if (scenario === 'delayed-recovery') { setTimeout(complete, 500); return; }
+  if (scenario === 'healthy-recovery') {
+    emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'normal task progress' }], stop_reason: null } });
+    setTimeout(complete, 500); return;
+  }
+  complete();
 });
 `);
 });
@@ -56,11 +69,12 @@ afterAll(async () => { await rm(directory, { recursive: true, force: true }); })
 
 function setup(scenario = 'once', maxRetries = 3, delayMs = 1, policy: Partial<AmpRetryPolicy> = {}) {
   const log = path.join(directory, `input-${++sequence}.jsonl`);
-  const transport = createCliTransport(process.execPath, [fixture, log, scenario], true, { maxRetries, delayMs, ...policy });
+  const diagnostics: RetryDiagnostic[] = [];
+  const transport = createCliTransport(process.execPath, [fixture, log, scenario], true, { maxRetries, delayMs, ...policy }, (entry) => diagnostics.push(entry));
   transports.push(transport);
   const controller = new AbortController();
   const request = { sessionId: `session-${sequence}`, prompt: 'original instruction', options: { cwd: directory }, signal: controller.signal, steer: false };
-  return { transport, request, controller, log, inputs: async () => (await readFile(log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)) };
+  return { transport, request, controller, log, diagnostics, inputs: async () => (await readFile(log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)) };
 }
 async function collect(messages: AsyncIterable<AmpStreamMessage>) {
   const result: AmpStreamMessage[] = [];
@@ -90,10 +104,77 @@ describe('CLI prompt recovery', () => {
     expect(await inputs()).toHaveLength(3);
   });
 
-  it.each(['auth', 'parameter', 'subscription', 'pre-echo', 'exit-zero'])('does not replay ambiguous or non-transient failures: %s', async (scenario) => {
+  it.each(['pre-echo', 'exit-zero'])('does not replay unacknowledged inputs: %s', async (scenario) => {
     const { transport, request, inputs } = setup(scenario);
     await expect(collect(transport.execute(request))).rejects.toThrow(scenario === 'auth' ? 'Unauthorized' : scenario === 'parameter' ? 'Invalid model parameter' : scenario === 'subscription' ? 'model subscription expired' : scenario === 'pre-echo' ? transient : 'exited with code 0');
     expect(await inputs()).toHaveLength(1);
+  });
+
+  it.each(['overload', 'unknown', 'exit-after-echo'])('prioritizes recovery for acknowledged execution errors: %s', async (scenario) => {
+    const { transport, request, inputs } = setup(scenario);
+    const messages = await collect(transport.execute(request));
+    expect(messages.at(-1)?.message?.content).toEqual([{ type: 'text', text: 'recovered' }]);
+    expect(await inputs()).toHaveLength(2);
+  });
+
+  it.each(['auth', 'parameter', 'subscription'])('retries model errors before reporting the exhausted result: %s', async (scenario) => {
+    const { transport, request, inputs } = setup(scenario, 1);
+    await expect(collect(transport.execute(request))).rejects.toThrow(scenario === 'auth' ? 'Unauthorized' : scenario === 'parameter' ? 'Invalid model parameter' : 'subscription expired');
+    expect(await inputs()).toHaveLength(2);
+  });
+
+  it('records the overloaded failure and the complete recovery sequence without raw inputs', async () => {
+    const { transport, request, diagnostics } = setup('overload');
+    request.prompt = 'PRIVATE_PROMPT_SENTINEL';
+    await collect(transport.execute(request));
+    expect(diagnostics.map((entry) => entry.event)).toEqual(['execution_started', 'failure', 'retry_scheduled', 'retry_started', 'recovery_resumed', 'recovered']);
+    expect(diagnostics[1]).toMatchObject({ failureKind: 'overloaded', reason: 'retry', promptAcknowledged: true });
+    expect(diagnostics[1]?.failureFingerprint).toMatch(/^[a-f0-9]{16}$/);
+    expect(new Set(diagnostics.map((entry) => entry.executionId)).size).toBe(1);
+    expect(diagnostics.at(-1)?.ampThreadId).toBe(threadId);
+    const serialized = JSON.stringify(diagnostics);
+    expect(serialized).not.toContain('PRIVATE_PROMPT_SENTINEL');
+    expect(serialized).not.toContain(overload);
+  });
+
+  it.each([
+    { scenario: 'always', maxRetries: 0, reason: 'max_retries' },
+    { scenario: 'pre-echo', maxRetries: 3, reason: 'input_unacknowledged' },
+  ])('explains why recovery stopped: $reason', async ({ scenario, maxRetries, reason }) => {
+    const { transport, request, diagnostics } = setup(scenario, maxRetries);
+    await expect(collect(transport.execute(request))).rejects.toThrow(transient);
+    expect(diagnostics.at(-1)).toMatchObject({ event: 'stopped', reason });
+  });
+
+  it('keeps unknown failure text out of the retry diagnostics', async () => {
+    const { transport, request, diagnostics } = setup('unknown');
+    await collect(transport.execute(request));
+    expect(diagnostics[1]?.failureKind).toBe('unknown');
+    expect(JSON.stringify(diagnostics)).not.toContain('PRIVATE_ERROR_SENTINEL');
+  });
+
+  it('recovers an empty error without replaying the original instruction', async () => {
+    const { transport, request, inputs, diagnostics } = setup('empty-error', 1);
+    await collect(transport.execute(request));
+    const received = await inputs();
+    expect(received).toHaveLength(2);
+    expect(received[1].prompt).toContain('Continue the interrupted turn');
+    expect(received[1].args.slice(0, 3)).toEqual(['threads', 'continue', threadId]);
+    expect(diagnostics.some((entry) => entry.event === 'retry_scheduled')).toBe(true);
+  });
+
+  it.each(['delayed-recovery', 'empty-progress-recovery'])('terminates a recovery without meaningful output before the deadline: %s', async (scenario) => {
+    const { transport, request, diagnostics } = setup(scenario, 3, 1, { maxDurationMs: 300 });
+    await expect(collect(transport.execute(request))).rejects.toThrow('automatic retry window exhausted');
+    expect(diagnostics.at(-1)).toMatchObject({ event: 'stopped', reason: 'window_expired' });
+    expect(diagnostics.some((entry) => entry.event === 'recovered')).toBe(false);
+  });
+
+  it('lets healthy recovered execution finish beyond the recovery waiting window', async () => {
+    const { transport, request, diagnostics } = setup('healthy-recovery', 3, 1, { maxDurationMs: 300 });
+    const messages = await collect(transport.execute(request));
+    expect(messages.at(-1)?.message?.content).toEqual([{ type: 'text', text: 'recovered' }]);
+    expect(diagnostics.at(-1)?.event).toBe('recovered');
   });
 
   it('defaults to a 30-second first wait and a 50-attempt ceiling without blocking cancellation', async () => {
@@ -134,13 +215,14 @@ describe('CLI prompt recovery', () => {
   });
 
   it('limits the final wait to the recovery window and never starts a late attempt', async () => {
-    const { transport, request, inputs } = setup('always', 50, 10000, { maxDurationMs: 40 });
+    const { transport, request, inputs, diagnostics } = setup('always', 50, 10000, { maxDurationMs: 40 });
     const waits: number[] = [];
     await expect((async () => {
       for await (const message of transport.execute(request)) if (message.retry) waits.push(message.retry.delayMs);
     })()).rejects.toThrow(transient);
     expect(waits).toHaveLength(1);
     expect(waits[0]).toBeLessThanOrEqual(40);
+    expect(diagnostics.at(-1)).toMatchObject({ event: 'stopped', reason: 'window_expired' });
     expect(await inputs()).toHaveLength(1);
   });
 
@@ -151,7 +233,7 @@ describe('CLI prompt recovery', () => {
   });
 
   it('does not drop a steer whose acceptance is unknown', async () => {
-    const { transport, request, inputs } = setup('pending-steer');
+    const { transport, request, inputs, diagnostics } = setup('pending-steer');
     const iterator = transport.execute(request)[Symbol.asyncIterator]();
     for (;;) {
       const next = await iterator.next();
@@ -161,6 +243,7 @@ describe('CLI prompt recovery', () => {
     await transport.steer?.({ ...request, prompt: 'unacknowledged replacement', steer: true });
     await expect(collect({ [Symbol.asyncIterator]: () => iterator })).rejects.toThrow(transient);
     expect(await inputs()).toHaveLength(2);
+    expect(diagnostics.at(-1)).toMatchObject({ event: 'stopped', reason: 'steer_unacknowledged' });
   });
 
   it('continues after an acknowledged steer and retains the same thread', async () => {
@@ -181,7 +264,7 @@ describe('CLI prompt recovery', () => {
   });
 
   it.each(['cancel', 'close'])('stops immediately during retry backoff: %s', async (action) => {
-    const { transport, request, controller, inputs } = setup('always', 3, 10000);
+    const { transport, request, controller, inputs, diagnostics } = setup('always', 3, 10000);
     const iterator = transport.execute(request)[Symbol.asyncIterator]();
     // The nonterminal status tells the client that recovery is waiting.
     for (;;) {
@@ -193,6 +276,7 @@ describe('CLI prompt recovery', () => {
     if (action === 'cancel') controller.abort(); else transport.closeAll?.();
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
     expect(await inputs()).toHaveLength(1);
+    expect(diagnostics.at(-1)).toMatchObject({ event: 'cancelled', reason: action === 'cancel' ? 'cancelled' : 'connection_closed' });
   });
 });
 
@@ -263,7 +347,7 @@ describe('ACP failure and recovery reporting', () => {
 
 describe('ACP authentication failures', () => {
   it('keeps the authentication-required response and does not retry', async () => {
-    const { transport, inputs } = setup('auth');
+    const { transport, inputs } = setup('auth', 0);
     const { client } = connect(transport);
     await client.initialize({ protocolVersion: 1, clientCapabilities: {} });
     const session = await client.newSession({ cwd: directory, mcpServers: [] });

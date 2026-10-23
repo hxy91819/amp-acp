@@ -13,7 +13,9 @@ This is an ACP (Agent Client Protocol) adapter that bridges Amp Code to ACP-comp
 - `src/run-acp.ts` — Sets up ACP connection using stdin/stdout JSON streams
 - `src/server.ts` — `AmpAcpAgent` class: handles sessions and durable context forks through Amp thread references, preserves ACP text/image prompt order, declares native steering, injects concurrent local prompts, and routes local or Orb execution
 - `src/cli-prompt.ts` — Formats CLI input, enforces Amp's serialized input limit, and persists original images as durable file references when inline input is too large
-- `src/amp-transport.ts` — Executes Amp through the CLI or SDK, injects multimodal CLI steers into the original output iterator, matches text-only echoes through the latest accepted prompt, recovers transient failures by continuing the same thread with bounded cancellable backoff, and manages native thread archival
+- `src/amp-transport.ts` — Executes Amp through the CLI or SDK, injects multimodal CLI steers into the original output iterator, matches text-only echoes through the latest accepted prompt, prioritizes recovery for acknowledged execution failures with bounded cancellable backoff, and manages native thread archival
+- `src/retry-diagnostics.ts` — Writes categorized retry decisions and outcomes to stderr and bounded private JSONL logs, excluding raw inputs and error bodies
+- `src/state-directory.ts` — Resolves the shared adapter state directory for durable thread mappings, images, and diagnostics
 - `src/thread-mapping-store.ts` — Persists durable ACP-session-to-Amp-thread mappings and idle-fork source references for resume and lifecycle operations
 - `src/amp-modes.ts` — Builds session mode selectors from local plugin metadata or the saved remote Dial
 - `src/amp-remote-dial.ts` — Reads Amp's internal `getUserInfo` Dial using CLI credentials; owns authentication refresh, validation, and a credential-scoped 5-minute disk cache shared across sessions/processes
