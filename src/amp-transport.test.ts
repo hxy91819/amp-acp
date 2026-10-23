@@ -45,7 +45,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     initialized = true;
     const init = () => console.log(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'T-cli-test', process_id: process.pid }));
     if (prompt === 'early wait') {
-      setTimeout(init, 5);
+      setTimeout(() => { init(); writeFileSync(${JSON.stringify(path.join(fixtureDir, 'early-ready'))}, 'ready'); }, 5);
       return;
     }
     init();
@@ -417,7 +417,10 @@ process.exit(3);
     await new Promise((resolve) => setTimeout(resolve, 1));
     controller.abort();
     await expect(pending).rejects.toThrow('Amp CLI prompt was cancelled');
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    const ready = () => Bun.file(path.join(fixtureDir, 'early-ready')).exists();
+    const deadline = Date.now() + 2000;
+    while (!await ready() && Date.now() < deadline) await Bun.sleep(5);
+    expect(await ready()).toBe(true);
 
     const steered = await collect(transport.execute({
       sessionId: 'session-early-steer',

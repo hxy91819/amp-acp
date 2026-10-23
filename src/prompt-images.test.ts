@@ -145,7 +145,7 @@ describe('ACP image input to Amp CLI', () => {
     const session = await client.newSession({ cwd: fixtureDir, mcpServers: [] });
     await expect(client.prompt({ sessionId: session.sessionId, prompt: [{ type: 'text', text: 'reject before echo' }] }))
       .rejects.toMatchObject({ code: -32603, data: { details: expect.stringContaining('fixture rejected input') } });
-    expect(assistantText(updates)).toContain('fixture rejected input');
+    expect(assistantText(updates)).toBe('');
     updates.length = 0;
     await client.prompt({ sessionId: session.sessionId, prompt: [{ type: 'text', text: 'after error' }] });
     expect(JSON.parse(assistantText(updates)).content).toEqual([{ type: 'text', text: 'after error' }]);

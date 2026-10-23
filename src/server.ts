@@ -620,15 +620,21 @@ If there are Cursor rules (in .cursor/rules/ or .cursorrules), Claude rules (CLA
           }
         }
 
+        if (message.type === 'system' && message.subtype === 'retry' && message.retry) {
+          const { attempt, maxRetries, delayMs } = message.retry;
+          await this.client.sessionUpdate({
+            sessionId: params.sessionId,
+            update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text:
+              `Amp connection interrupted; retry ${attempt}/${maxRetries} in ${delayMs / 1000}s.\n` } },
+          });
+        }
+
         if (message.type === 'result' && message.is_error) {
           if (typeof message.error === 'string' && isAuthError(message.error)) {
             console.error('[amp] Auth error in result, requesting authentication:', message.error);
             throw RequestError.authRequired();
           }
-          await this.client.sessionUpdate({
-            sessionId: params.sessionId,
-            update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `Error: ${message.error}` } },
-          });
+          throw new Error(message.error ?? 'Amp execution failed');
         }
       }
 
@@ -642,7 +648,9 @@ If there are Cursor rules (in .cursor/rules/ or .cursorrules), Claude rules (CLA
         throw RequestError.authRequired();
       }
       console.error('[amp] Execution error:', err);
-      throw err;
+      if (err instanceof RequestError) throw err;
+      const details = err instanceof Error ? err.message : String(err);
+      throw RequestError.internalError({ details }, details);
     } finally {
       if (s.controller === controller) {
         s.active = false;

@@ -2,6 +2,7 @@ import { execute, type AmpOptions } from '@ampcode/sdk';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { formatPromptInput } from './cli-prompt.js';
+import { setTimeout as delay } from 'node:timers/promises';
 
 export type AmpMcpServerConfig =
   | {
@@ -40,6 +41,7 @@ export interface AmpStreamMessage {
   is_error?: boolean;
   error?: string;
   parent_tool_use_id?: string | null;
+  retry?: { attempt: number; maxRetries: number; delayMs: number };
   message?: {
     content: unknown;
     stop_reason?: string | null;
@@ -243,6 +245,7 @@ interface CliSession {
   stderr: Buffer[];
   nextPromptSequence: number;
   pendingPromptEchoes: { prompt: string; sequence: number }[];
+  lastFailure?: string;
 }
 
 function abortedError(): Error {
@@ -287,11 +290,42 @@ function isPromptComplete(message: AmpStreamMessage): boolean {
   );
 }
 
+export interface AmpRetryPolicy {
+  maxRetries: number;
+  delayMs: number;
+  maxDelayMs?: number;
+  maxDurationMs?: number;
+}
+
+const MAX_RETRY_WINDOW_MS = 60 * 60 * 1000;
+
+function defaultRetryPolicy(): AmpRetryPolicy {
+  const value = process.env.AMP_ACP_MAX_RETRIES;
+  const maxRetries = value === undefined ? 50 : Number(value);
+  if (!Number.isSafeInteger(maxRetries) || maxRetries < 0) {
+    throw new Error('AMP_ACP_MAX_RETRIES must be a non-negative integer');
+  }
+  const windowSeconds = Number(process.env.AMP_ACP_RETRY_WINDOW_SECONDS ?? 3600);
+  if (!Number.isFinite(windowSeconds) || windowSeconds <= 0 || windowSeconds > 3600) {
+    throw new Error('AMP_ACP_RETRY_WINDOW_SECONDS must be greater than 0 and at most 3600');
+  }
+  return { maxRetries, delayMs: 30000, maxDelayMs: 300000, maxDurationMs: windowSeconds * 1000 };
+}
+
+function isTransientFailure(error: string): boolean {
+  if (/unauthorized|forbidden|auth|login|invalid.?api.?key|insufficient|quota|credits|balance/i.test(error)) return false;
+  return /WebSocket closed:\s*(1006|1011|1012|1013)\b|\b(ECONNRESET|ETIMEDOUT|EAI_AGAIN)\b|\b(?:HTTP|status(?: code)?)[ :]+(?:408|429|500|502|503|504)\b/i.test(error);
+}
+
+const RECOVERY_PROMPT = 'Continue the interrupted turn from the existing thread context. Check completed tool results first and continue only unfinished work; do not repeat completed actions.';
+
 export function createCliTransport(
   command = process.env.AMP_CLI_PATH ?? 'amp',
   commandArgs: string[] = [],
   preserveCancelledProcess = process.env.AMP_ACP_CANCEL_MODE === 'steer',
+  retryPolicy: AmpRetryPolicy = defaultRetryPolicy(),
 ): AmpTransport {
+  const executions = new Map<string, AbortController>();
   const sessions = new Map<string, CliSession>();
 
   const terminateSession = (sessionId: string): Promise<void> => {
@@ -305,6 +339,7 @@ export function createCliTransport(
   };
 
   const closeSession = (sessionId: string): void => {
+    executions.get(sessionId)?.abort();
     void terminateSession(sessionId);
   };
 
@@ -324,7 +359,7 @@ export function createCliTransport(
     sessions.set(sessionId, session);
     const failSession = (error: Error): void => {
       session.queue.fail(error);
-      if (sessions.get(sessionId) === session) closeSession(sessionId);
+      if (sessions.get(sessionId) === session) void terminateSession(sessionId);
     };
     child.stderr.on('data', (chunk: Buffer) => session.stderr.push(chunk));
     child.stdin.on('error', failSession);
@@ -336,6 +371,9 @@ export function createCliTransport(
           if (!line.trim()) continue;
           try {
             const message = JSON.parse(line) as AmpStreamMessage;
+            if (message.type === 'result' && message.is_error) {
+              session.lastFailure = message.error ?? 'Amp CLI execution failed';
+            }
             const pendingIndex = session.pendingPromptEchoes.findIndex(
               (pending) => isPromptEcho(message, pending.prompt),
             );
@@ -356,7 +394,9 @@ export function createCliTransport(
     child.once('error', failSession);
     child.once('close', (code, processSignal) => {
       if (sessions.get(sessionId) === session) sessions.delete(sessionId);
-      session.queue.fail(processExitError(code, processSignal, session.stderr));
+      session.queue.fail(session.lastFailure
+        ? new Error(session.lastFailure)
+        : processExitError(code, processSignal, session.stderr));
     });
     return session;
   };
@@ -387,7 +427,7 @@ export function createCliTransport(
     async steer({ sessionId, prompt, signal }) {
       signal.throwIfAborted();
       const session = sessions.get(sessionId);
-      if (!session) throw new Error('No active Amp CLI process for steering');
+      if (!session) return false;
       const promptText = getPromptText(prompt);
       // Amp echoes neither request IDs nor image content. An identical pending
       // echo cannot distinguish an old turn from one superseded by this steer.
@@ -395,55 +435,98 @@ export function createCliTransport(
       await writePrompt(session, prompt, promptText, true);
       return true;
     },
-    async *execute({ sessionId, prompt, options, signal, steer }) {
-      signal.throwIfAborted();
-
-      // Amp omits images from user echoes; correlate using only their text.
-      const promptText = getPromptText(prompt);
-
-      let session = sessions.get(sessionId);
+    async *execute({ sessionId, prompt, options, signal: requestSignal, steer }) {
+      requestSignal.throwIfAborted();
+      const lifecycle = new AbortController();
+      executions.set(sessionId, lifecycle);
+      const signal = AbortSignal.any([requestSignal, lifecycle.signal]);
+      let recoveryThreadId = typeof options.continue === 'string' && isAmpThreadId(options.continue)
+        ? options.continue : undefined;
+      let currentPrompt = prompt;
+      let currentOptions = options;
       let inputSteer = steer;
-      if (session?.pendingPromptEchoes.some((pending) => pending.prompt === promptText)) {
-        await terminateSession(sessionId);
-        signal.throwIfAborted();
-        session = undefined;
-        inputSteer = false;
-      }
-      session ??= startSession(sessionId, options);
+      let recoveryStartedAt: number | undefined;
+      const maxDurationMs = Math.min(retryPolicy.maxDurationMs ?? MAX_RETRY_WINDOW_MS, MAX_RETRY_WINDOW_MS);
 
       try {
-        const promptSequence = await writePrompt(session, prompt, promptText, inputSteer);
-        let promptEchoed = false;
-        let lastEchoedSequence = 0;
-        for (;;) {
-          const queued = await session.queue.shift(signal);
-          const { message } = queued;
-          if (message.type === 'result' && message.is_error) {
-            if (sessions.get(sessionId) === session) await terminateSession(sessionId);
-            yield message;
-            throw new Error(message.error ?? 'Amp CLI execution failed');
+        for (let attempt = 0; ; attempt++) {
+          signal.throwIfAborted();
+          const promptText = getPromptText(currentPrompt);
+          let session = sessions.get(sessionId);
+          if (session?.pendingPromptEchoes.some((pending) => pending.prompt === promptText)) {
+            await terminateSession(sessionId);
+            signal.throwIfAborted();
+            session = undefined;
           }
-          if (queued.promptSequence !== undefined && queued.promptSequence >= promptSequence) {
-            promptEchoed = true;
-            lastEchoedSequence = queued.promptSequence;
-          } else if (!promptEchoed) {
-            if (message.type === 'system') yield message;
-            continue;
+          // A replacement process starts with an ordinary prompt, never a steer.
+          if (!session) inputSteer = false;
+          session ??= startSession(sessionId, currentOptions);
+          let retryError: string | undefined;
+          try {
+            const promptSequence = await writePrompt(session, currentPrompt, promptText, inputSteer);
+            let promptEchoed = false;
+            let lastEchoedSequence = 0;
+            for (;;) {
+              const { message, promptSequence: echoedSequence } = await session.queue.shift(signal);
+              if (message.session_id && isAmpThreadId(message.session_id)) recoveryThreadId = message.session_id;
+              if (echoedSequence !== undefined && echoedSequence >= promptSequence) {
+                promptEchoed = true;
+                lastEchoedSequence = echoedSequence;
+              }
+              if (message.type === 'result' && message.is_error) {
+                const error = message.error ?? 'Amp CLI execution failed';
+                const transient = isTransientFailure(error);
+                if (transient) recoveryStartedAt ??= performance.now();
+                const withinWindow = recoveryStartedAt !== undefined && performance.now() - recoveryStartedAt < maxDurationMs;
+                const canRetry = attempt < retryPolicy.maxRetries && recoveryThreadId && promptEchoed
+                  && lastEchoedSequence === session.nextPromptSequence && transient && withinWindow;
+                if (sessions.get(sessionId) === session) await terminateSession(sessionId);
+                signal.throwIfAborted();
+                if (!canRetry) {
+                  yield message;
+                  throw new Error(error);
+                }
+                retryError = error;
+                break;
+              }
+              if (!promptEchoed) {
+                if (message.type === 'system') yield message;
+                continue;
+              }
+              yield message;
+              if (lastEchoedSequence === session.nextPromptSequence && isPromptComplete(message)) return;
+            }
+          } catch (error) {
+            if (signal.aborted) {
+              if ((!preserveCancelledProcess || lifecycle.signal.aborted) && sessions.get(sessionId) === session) {
+                await terminateSession(sessionId);
+              }
+              throw abortedError();
+            }
+            throw error;
           }
-          yield message;
-          if (promptEchoed && lastEchoedSequence === session.nextPromptSequence && isPromptComplete(message)) return;
+          if (retryError) {
+            const remainingMs = maxDurationMs - (performance.now() - recoveryStartedAt!);
+            if (remainingMs <= 0) throw new Error(retryError);
+            const delayMs = Math.min(retryPolicy.delayMs * 2 ** attempt, retryPolicy.maxDelayMs ?? 300000, remainingMs);
+            console.error(`[amp] transient model failure; retry ${attempt + 1}/${retryPolicy.maxRetries} in ${delayMs}ms`);
+            yield { type: 'system', subtype: 'retry', retry: { attempt: attempt + 1, maxRetries: retryPolicy.maxRetries, delayMs } };
+            await delay(delayMs, undefined, { signal });
+            if (delayMs === remainingMs || performance.now() - recoveryStartedAt! >= maxDurationMs) {
+              throw new Error(`${retryError} (automatic retry window exhausted)`);
+            }
+            currentPrompt = RECOVERY_PROMPT;
+            currentOptions = { ...options, continue: recoveryThreadId };
+            inputSteer = false;
+          }
         }
-      } catch (error) {
-        if (signal.aborted) {
-          if (!preserveCancelledProcess && sessions.get(sessionId) === session) await terminateSession(sessionId);
-          throw abortedError();
-        }
-        throw error;
+      } finally {
+        if (executions.get(sessionId) === lifecycle) executions.delete(sessionId);
       }
     },
     closeSession,
     closeAll() {
-      for (const sessionId of [...sessions.keys()]) closeSession(sessionId);
+      for (const sessionId of new Set([...executions.keys(), ...sessions.keys()])) closeSession(sessionId);
     },
   };
 
