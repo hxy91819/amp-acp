@@ -127,6 +127,18 @@
       "relatedIssues": [],
       "disposition": "internal",
       "reason": "Preserve model failure details and recover acknowledged local CLI turns on the same thread, with up to 50 attempts, 30-second to 5-minute backoff, and a maximum one-hour recovery window. Cancellation and native steering fallback remain effective. No upstream ticket has been filed."
+    },
+    {
+      "branch": "fix/amp-overload-retry-logs",
+      "lastPackaged": {
+        "sourceCommit": "7cf2e2dbfbd0b543b45440ba3c23352d25db5768",
+        "aggregateCommit": "075a26dcdfd700d0b77fc51f9072fbc97ee0d384"
+      },
+      "specIssue": null,
+      "upstreamFeedback": [],
+      "relatedIssues": [],
+      "disposition": "internal",
+      "reason": "Extend the registered retry integration to prefer recovery for acknowledged execution errors, including server_is_overloaded and unknown model errors. Persist bounded categorized diagnostics without raw inputs or error bodies; enforce the recovery waiting deadline while allowing healthy resumed tasks to finish."
     }
   ]
 }
