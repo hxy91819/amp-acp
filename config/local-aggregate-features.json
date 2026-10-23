@@ -119,8 +119,8 @@
     {
       "branch": "fix/amp-provider-error-retry",
       "lastPackaged": {
-        "sourceCommit": "379d88b6f6757853a6263d43aae3f535fbec4b9e",
-        "aggregateCommit": "98fbba8f8cc469d7383c8070e52fd8e4da493674"
+        "sourceCommit": "7814a38a0694b9bb916d66f351b1b4bf7b86f42e",
+        "aggregateCommit": "c7b57cf407ee1631ad1f2639e4904a66620ba556"
       },
       "specIssue": null,
       "upstreamFeedback": [],
