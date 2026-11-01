@@ -70,6 +70,7 @@ Commit and push every completed, verified change, including documentation and co
 | `feature/amp-context-fork` | `27cc79ff` | `1887a509` | Internal; no upstream ticket |
 | `fix/amp-provider-error-retry` | `7814a38a` | `c7b57cf4` | Internal; no upstream ticket |
 | `fix/amp-overload-retry-logs` | `7cf2e2db` | `075a26dc` | Internal; no upstream ticket |
+| `fix/zod-4-security` | `764c87bb` | `9a88e34a` | Internal; no upstream ticket |
 
 Use `$open-source-fork-maintenance` before upstream synchronization, aggregate rebuilding, or local packaging. It checks new worktrees, source commit changes, upstream changes, and upstream feedback before asking for a rebase or packaging decision. When a stable-release tag pattern is configured, rebase affected source branches onto the latest matching tag and rebuild from that tag. Unreleased commits on the upstream ref after that tag are debt unless the user chooses them. When the user explicitly declines a rebase, incremental packaging on the existing local baseline remains allowed, but the registry must retain the previous upstream baseline and the result must report the outstanding upstream debt.
 <!-- open-source-fork-maintenance:end -->

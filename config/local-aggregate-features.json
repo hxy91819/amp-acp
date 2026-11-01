@@ -139,6 +139,18 @@
       "relatedIssues": [],
       "disposition": "internal",
       "reason": "Extend the registered retry integration to prefer recovery for acknowledged execution errors, including server_is_overloaded and unknown model errors. Persist bounded categorized diagnostics without raw inputs or error bodies; enforce the recovery waiting deadline while allowing healthy resumed tasks to finish."
+    },
+    {
+      "branch": "fix/zod-4-security",
+      "lastPackaged": {
+        "sourceCommit": "764c87baa9bc6977939b41ea96b7285c5d27cbb2",
+        "aggregateCommit": "9a88e34a65af55b0637c2eb3d82d2205cf2f0a42"
+      },
+      "specIssue": null,
+      "upstreamFeedback": [],
+      "relatedIssues": [],
+      "disposition": "internal",
+      "reason": "Force zod to 4.6.7 for CVE-2023-54404 (GHSA-mrhx-c7xc-m3w5); the root override replaces the vulnerable 3.25.76 transitive install while a tsconfig paths shim keeps @ampcode/sdk's zod v3 types precise. No upstream ticket has been filed."
     }
   ]
 }
