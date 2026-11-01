@@ -3,6 +3,12 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "paths": {
+      // @ampcode/sdk ships zod v3 types while the root override installs zod 4
+      // for @agentclientprotocol/sdk (zod/v4). Point the bare specifier at the
+      // v3 type surface bundled in the zod package to keep AmpOptions precise.
+      "zod": ["./node_modules/zod/v3/index.d.ts"]
+    },
     "outDir": "dist",
     "rootDir": "src",
     "strict": true,
